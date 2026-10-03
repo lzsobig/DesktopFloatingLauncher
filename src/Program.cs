@@ -775,6 +775,18 @@ namespace FloatingLauncher
                 if (selectedApps.Count >= 8) break;
             }
 
+            if (selectedApps.Count < 8)
+            {
+                foreach (var app in allIndexedApps)
+                {
+                    if (!selectedApps.Contains(app))
+                    {
+                        selectedApps.Add(app);
+                    }
+                    if (selectedApps.Count >= 8) break;
+                }
+            }
+
             for (int i = 0; i < selectedApps.Count; i++)
             {
                 var app = selectedApps[i];
@@ -2006,7 +2018,7 @@ namespace FloatingLauncher
         public static void Main()
         {
             bool isNew;
-            appMutex = new System.Threading.Mutex(true, "DesktopFloatingLauncherSingleInstanceMutex_LiZhen", out isNew);
+            appMutex = new System.Threading.Mutex(true, "DesktopFloatingLauncherSingleInstanceMutex", out isNew);
 
             if (!isNew)
             {
