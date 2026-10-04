@@ -96,6 +96,9 @@ namespace FloatingLauncher
         public double WindowTop { get; set; }
         public bool IsTopmost { get; set; }
         public string Hotkey { get; set; }
+        public bool ShowFloatingWidget { get; set; }
+        public double WidgetLeft { get; set; }
+        public double WidgetTop { get; set; }
         public List<AppItem> CustomApps { get; set; }
 
         public AppConfig()
@@ -104,6 +107,9 @@ namespace FloatingLauncher
             WindowTop = -1;
             IsTopmost = true;
             Hotkey = "Alt+Q"; // Default to Alt+Q to prevent conflict with Antigravity / Windows system keys
+            ShowFloatingWidget = true; // Show compact desktop widget by default
+            WidgetLeft = -1;
+            WidgetTop = -1;
             CustomApps = new List<AppItem>();
         }
     }
@@ -150,6 +156,21 @@ namespace FloatingLauncher
                         else if (key.Equals("Hotkey", StringComparison.OrdinalIgnoreCase))
                         {
                             config.Hotkey = val;
+                        }
+                        else if (key.Equals("ShowFloatingWidget", StringComparison.OrdinalIgnoreCase))
+                        {
+                            bool b;
+                            if (bool.TryParse(val, out b)) config.ShowFloatingWidget = b;
+                        }
+                        else if (key.Equals("WidgetLeft", StringComparison.OrdinalIgnoreCase))
+                        {
+                            double d;
+                            if (double.TryParse(val, out d)) config.WidgetLeft = d;
+                        }
+                        else if (key.Equals("WidgetTop", StringComparison.OrdinalIgnoreCase))
+                        {
+                            double d;
+                            if (double.TryParse(val, out d)) config.WidgetTop = d;
                         }
                         else if (key.Equals("CustomApp", StringComparison.OrdinalIgnoreCase))
                         {
@@ -229,8 +250,327 @@ namespace FloatingLauncher
         }
     }
 
+
+    public static class AppIcons
+    {
+        private static ImageSource cachedLogoImage;
+        private static System.Drawing.Icon cachedTrayIcon;
+
+        public static ImageSource GetAppLogoImage()
+        {
+            if (cachedLogoImage != null) return cachedLogoImage;
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                using (var stream = asm.GetManifestResourceStream("app.png"))
+                {
+                    if (stream != null)
+                    {
+                        var decoder = new PngBitmapDecoder(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                        cachedLogoImage = decoder.Frames[0];
+                        return cachedLogoImage;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                string p1 = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "app.png");
+                if (File.Exists(p1))
+                {
+                    cachedLogoImage = new BitmapImage(new Uri(p1, UriKind.Absolute));
+                    return cachedLogoImage;
+                }
+                string p2 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopFloatingLauncher", "app.png");
+                if (File.Exists(p2))
+                {
+                    cachedLogoImage = new BitmapImage(new Uri(p2, UriKind.Absolute));
+                    return cachedLogoImage;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        public static System.Drawing.Icon GetTrayIcon()
+        {
+            if (cachedTrayIcon != null) return cachedTrayIcon;
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                using (var stream = asm.GetManifestResourceStream("app.ico"))
+                {
+                    if (stream != null)
+                    {
+                        cachedTrayIcon = new System.Drawing.Icon(stream, 32, 32);
+                        return cachedTrayIcon;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                string p1 = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "app.ico");
+                if (File.Exists(p1))
+                {
+                    cachedTrayIcon = new System.Drawing.Icon(p1, 32, 32);
+                    return cachedTrayIcon;
+                }
+                string p2 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopFloatingLauncher", "app.ico");
+                if (File.Exists(p2))
+                {
+                    cachedTrayIcon = new System.Drawing.Icon(p2, 32, 32);
+                    return cachedTrayIcon;
+                }
+            }
+            catch { }
+
+            try
+            {
+                string exe = Process.GetCurrentProcess().MainModule.FileName;
+                cachedTrayIcon = System.Drawing.Icon.ExtractAssociatedIcon(exe);
+                if (cachedTrayIcon != null) return cachedTrayIcon;
+            }
+            catch { }
+
+            return System.Drawing.SystemIcons.Application;
+        }
+    }
+
+    public class FloatingWidgetWindow : Window
+    {
+        private MainWindow mainWindow;
+        private AppConfig config;
+        private Border containerBorder;
+        private StackPanel contentPanel;
+        private TextBlock hintText;
+        private System.Windows.Controls.Image logoImage;
+        private System.Windows.Point mouseDownScreenPos;
+
+        public FloatingWidgetWindow(MainWindow main, AppConfig cfg)
+        {
+            mainWindow = main;
+            config = cfg;
+
+            WindowStyle = WindowStyle.None;
+            AllowsTransparency = true;
+            Background = Brushes.Transparent;
+            Topmost = true;
+            ShowInTaskbar = false;
+            ResizeMode = ResizeMode.NoResize;
+            Width = 50;
+            Height = 50;
+
+            if (config.WidgetLeft >= 0 && config.WidgetTop >= 0 &&
+                config.WidgetLeft < SystemParameters.VirtualScreenWidth - 20 &&
+                config.WidgetTop < SystemParameters.VirtualScreenHeight - 20)
+            {
+                Left = config.WidgetLeft;
+                Top = config.WidgetTop;
+            }
+            else
+            {
+                Left = Math.Max(20, SystemParameters.WorkArea.Right - 72);
+                Top = Math.Max(20, SystemParameters.WorkArea.Height * 0.35);
+            }
+
+            BuildUI();
+        }
+
+        private void BuildUI()
+        {
+            containerBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(220, 226, 232, 240)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Cursor = Cursors.Hand,
+                SnapsToDevicePixels = true,
+                ClipToBounds = true,
+                Effect = new DropShadowEffect
+                {
+                    BlurRadius = 14,
+                    ShadowDepth = 2,
+                    Direction = 270,
+                    Color = Colors.Black,
+                    Opacity = 0.22
+                }
+            };
+
+            contentPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(7, 0, 7, 0)
+            };
+
+            logoImage = new System.Windows.Controls.Image
+            {
+                Source = AppIcons.GetAppLogoImage(),
+                Width = 34,
+                Height = 34,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            RenderOptions.SetBitmapScalingMode(logoImage, BitmapScalingMode.HighQuality);
+            contentPanel.Children.Add(logoImage);
+
+            string hkDisplay = mainWindow != null && !string.IsNullOrEmpty(mainWindow.HotkeyDisplay) ? mainWindow.HotkeyDisplay : "Alt+Q";
+            hintText = new TextBlock
+            {
+                Text = hkDisplay,
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 4, 0),
+                Visibility = Visibility.Collapsed
+            };
+            contentPanel.Children.Add(hintText);
+
+            containerBorder.Child = contentPanel;
+            Content = containerBorder;
+
+            ToolTip = "桌面极速悬浮窗\n• 单击：呼出/收起主搜索栏 (" + hkDisplay + ")\n• 拖拽：随意移动位置\n• 右键：设置与菜单";
+
+            MouseEnter += (s, e) =>
+            {
+                hintText.Visibility = Visibility.Visible;
+                var anim = new DoubleAnimation(50, 108, TimeSpan.FromMilliseconds(160))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                };
+                BeginAnimation(Window.WidthProperty, anim);
+            };
+
+            MouseLeave += (s, e) =>
+            {
+                var anim = new DoubleAnimation(ActualWidth, 50, TimeSpan.FromMilliseconds(160))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                };
+                anim.Completed += (s1, e1) =>
+                {
+                    hintText.Visibility = Visibility.Collapsed;
+                };
+                BeginAnimation(Window.WidthProperty, anim);
+            };
+
+            // Drag vs Click detection using standard DragMove
+            MouseLeftButtonDown += (s, e) =>
+            {
+                mouseDownScreenPos = PointToScreen(e.GetPosition(this));
+                try
+                {
+                    DragMove();
+                }
+                catch { }
+
+                var mouseUpScreenPos = PointToScreen(e.GetPosition(this));
+                double dx = Math.Abs(mouseUpScreenPos.X - mouseDownScreenPos.X);
+                double dy = Math.Abs(mouseUpScreenPos.Y - mouseDownScreenPos.Y);
+
+                if (dx < 5 && dy < 5)
+                {
+                    mainWindow.ToggleWindowVisibility();
+                }
+                else
+                {
+                    config.WidgetLeft = Left;
+                    config.WidgetTop = Top;
+                    ConfigManager.SaveConfig(config);
+                }
+            };
+
+            // Context Menu
+            var ctxMenu = new ContextMenu();
+            var searchItem = new MenuItem { Header = "🔍 呼出搜索栏 (" + hkDisplay + ")" };
+            searchItem.Click += (s, e) => mainWindow.ShowLauncher();
+
+            var topItem = new MenuItem { Header = "📌 搜索栏保持最前", IsCheckable = true, IsChecked = config.IsTopmost };
+            topItem.Click += (s, e) =>
+            {
+                config.IsTopmost = topItem.IsChecked;
+                mainWindow.Topmost = config.IsTopmost;
+                ConfigManager.SaveConfig(config);
+            };
+
+            var autostartItem = new MenuItem { Header = "⚡ 开机自启动", IsCheckable = true, IsChecked = MainWindow.IsAutoStartEnabled() };
+            autostartItem.Click += (s, e) =>
+            {
+                MainWindow.SetAutoStart(autostartItem.IsChecked);
+            };
+
+            var hkItem = new MenuItem { Header = "⌨ 切换快捷键..." };
+            hkItem.Click += (s, e) => mainWindow.ShowHotkeyPillMenu();
+
+            var hideItem = new MenuItem { Header = "👁 隐藏桌面挂件 (可在托盘重新开启)" };
+            hideItem.Click += (s, e) =>
+            {
+                config.ShowFloatingWidget = false;
+                Hide();
+                ConfigManager.SaveConfig(config);
+                mainWindow.ShowTemporaryStatus("💡 桌面挂件已收起，随时可在任务栏托盘右键重新开启！");
+            };
+
+            var exitItem = new MenuItem { Header = "🚪 退出程序" };
+            exitItem.Click += (s, e) => Application.Current.Shutdown();
+
+            ctxMenu.Items.Add(searchItem);
+            ctxMenu.Items.Add(new Separator());
+            ctxMenu.Items.Add(topItem);
+            ctxMenu.Items.Add(autostartItem);
+            ctxMenu.Items.Add(hkItem);
+            ctxMenu.Items.Add(new Separator());
+            ctxMenu.Items.Add(hideItem);
+            ctxMenu.Items.Add(exitItem);
+
+            ContextMenu = ctxMenu;
+        }
+
+        public void UpdateHotkeyHint(string text)
+        {
+            if (hintText != null)
+            {
+                hintText.Text = text;
+            }
+            ToolTip = "桌面极速悬浮窗\n• 单击：呼出/收起主搜索栏 (" + text + ")\n• 拖拽：随意移动位置\n• 右键：设置与菜单";
+        }
+    }
+
     public class MainWindow : Window
     {
+        private FloatingWidgetWindow floatingWidget;
+
+        public string HotkeyDisplay
+        {
+            get { return hotkeyTextBlock != null ? hotkeyTextBlock.Text : (config != null && config.Hotkey != null ? config.Hotkey : "Alt + Q"); }
+        }
+
+        public void InitFloatingWidget()
+        {
+            try
+            {
+                if (floatingWidget == null)
+                {
+                    floatingWidget = new FloatingWidgetWindow(this, config);
+                }
+                if (config.ShowFloatingWidget)
+                {
+                    floatingWidget.Show();
+                }
+                else
+                {
+                    floatingWidget.Hide();
+                }
+            }
+            catch { }
+        }
+
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
@@ -378,6 +718,10 @@ namespace FloatingLauncher
                 if (hotkeyTextBlock != null)
                 {
                     hotkeyTextBlock.Text = display;
+                if (floatingWidget != null)
+                {
+                    floatingWidget.UpdateHotkeyHint(display);
+                }
                 }
                 if (trayIcon != null)
                 {
@@ -389,6 +733,10 @@ namespace FloatingLauncher
 
         protected override void OnClosed(EventArgs e)
         {
+            if (floatingWidget != null)
+            {
+                try { floatingWidget.Close(); } catch { }
+            }
             if (windowHandle != IntPtr.Zero)
             {
                 UnregisterHotKey(windowHandle, HOTKEY_ID);
@@ -401,7 +749,7 @@ namespace FloatingLauncher
             base.OnClosed(e);
         }
 
-        private static bool IsAutoStartEnabled()
+        public static bool IsAutoStartEnabled()
         {
             try
             {
@@ -413,7 +761,7 @@ namespace FloatingLauncher
             catch { return false; }
         }
 
-        private static void SetAutoStart(bool enable)
+        public static void SetAutoStart(bool enable)
         {
             try
             {
@@ -444,20 +792,30 @@ namespace FloatingLauncher
                 string hkDisplay = hotkeyTextBlock != null ? hotkeyTextBlock.Text : "Alt + Q";
                 trayIcon.Text = "桌面极速悬浮启动器 (" + hkDisplay + ")";
 
-                try
-                {
-                    string exePath = Process.GetCurrentProcess().MainModule.FileName;
-                    trayIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
-                }
-                catch
-                {
-                    trayIcon.Icon = SystemIcons.Application;
-                }
+                trayIcon.Icon = AppIcons.GetTrayIcon();
 
                 var menu = new ContextMenuStrip();
                 var showItem = new ToolStripMenuItem("🚀 呼出启动器 (" + hkDisplay + ")");
                 showItem.Font = new System.Drawing.Font(menu.Font, System.Drawing.FontStyle.Bold);
                 showItem.Click += (s, e) => ShowLauncher();
+
+                var widgetToggleItem = new ToolStripMenuItem("🏝 显示桌面常驻挂件");
+                widgetToggleItem.Checked = config.ShowFloatingWidget;
+                widgetToggleItem.Click += (s, e) =>
+                {
+                    config.ShowFloatingWidget = !config.ShowFloatingWidget;
+                    widgetToggleItem.Checked = config.ShowFloatingWidget;
+                    if (config.ShowFloatingWidget)
+                    {
+                        if (floatingWidget == null) floatingWidget = new FloatingWidgetWindow(this, config);
+                        floatingWidget.Show();
+                    }
+                    else
+                    {
+                        if (floatingWidget != null) floatingWidget.Hide();
+                    }
+                    ConfigManager.SaveConfig(config);
+                };
 
                 var hkMenu = new ToolStripMenuItem("⌨ 快捷键设置 (防冲突)");
                 AddTrayHkOption(hkMenu, "Alt + Q (推荐 · 零冲突)", "Alt+Q");
@@ -497,6 +855,7 @@ namespace FloatingLauncher
                 };
 
                 menu.Items.Add(showItem);
+                menu.Items.Add(widgetToggleItem);
                 menu.Items.Add(new ToolStripSeparator());
                 menu.Items.Add(hkMenu);
                 menu.Items.Add(reloadItem);
@@ -949,7 +1308,7 @@ namespace FloatingLauncher
             };
         }
 
-        private void ShowHotkeyPillMenu()
+        public void ShowHotkeyPillMenu()
         {
             var menu = new System.Windows.Controls.ContextMenu();
 
@@ -2140,7 +2499,7 @@ namespace FloatingLauncher
             }
         }
 
-        private void ShowTemporaryStatus(string msg)
+        public void ShowTemporaryStatus(string msg)
         {
             statusText.Text = msg;
             var timer = new System.Windows.Threading.DispatcherTimer
