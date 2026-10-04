@@ -67,7 +67,7 @@ namespace FloatingLauncher
                     }
                     else if (IsWebSearch)
                     {
-                        _iconSource = MainWindow.GetWebIcon();
+                        _iconSource = MainWindow.GetWebIcon(Name);
                     }
                     else if (IsSystemCommand)
                     {
@@ -76,7 +76,7 @@ namespace FloatingLauncher
                     else
                     {
                         string p = (!string.IsNullOrEmpty(TargetPath) && File.Exists(TargetPath)) ? TargetPath : OriginalLnkPath;
-                        _iconSource = MainWindow.GetFileIcon(p ?? DisplayPath);
+                        _iconSource = MainWindow.GetFileIcon(p ?? DisplayPath, Name);
                     }
                 }
                 return _iconSource;
@@ -106,7 +106,7 @@ namespace FloatingLauncher
         }
     }
 
-    public class ConfigManager
+    public static class ConfigManager
     {
         private static string ConfigDir = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -132,52 +132,70 @@ namespace FloatingLauncher
 
                         if (key.Equals("WindowLeft", StringComparison.OrdinalIgnoreCase))
                         {
-                            double v;
-                            if (double.TryParse(val, out v)) config.WindowLeft = v;
+                            double d;
+                            if (double.TryParse(val, out d)) config.WindowLeft = d;
                         }
                         else if (key.Equals("WindowTop", StringComparison.OrdinalIgnoreCase))
                         {
-                            double v;
-                            if (double.TryParse(val, out v)) config.WindowTop = v;
+                            double d;
+                            if (double.TryParse(val, out d)) config.WindowTop = d;
                         }
                         else if (key.Equals("IsTopmost", StringComparison.OrdinalIgnoreCase))
                         {
-                            bool v;
-                            if (bool.TryParse(val, out v)) config.IsTopmost = v;
+                            bool b;
+                            if (bool.TryParse(val, out b)) config.IsTopmost = b;
                         }
                         else if (key.Equals("CustomApp", StringComparison.OrdinalIgnoreCase))
                         {
-                            string[] parts = val.Split(new char[] { '|' }, 4);
+                            var parts = val.Split('|');
                             if (parts.Length >= 2)
                             {
-                                string name = parts[0];
-                                string target = parts[1];
-                                string args = parts.Length > 2 ? parts[2] : "";
-                                string workDir = parts.Length > 3 ? parts[3] : "";
-                                bool isDir = Directory.Exists(target);
-                                if (string.IsNullOrEmpty(workDir) && File.Exists(target))
+                                var app = new AppItem
                                 {
-                                    workDir = System.IO.Path.GetDirectoryName(target);
-                                }
-                                config.CustomApps.Add(new AppItem
-                                {
-                                    Name = name,
-                                    PinyinInitials = MainWindow.GetPinyinInitials(name),
-                                    TargetPath = target,
-                                    Arguments = args,
-                                    WorkingDirectory = workDir,
-                                    DisplayPath = target,
-                                    Category = isDir ? "文件夹" : "自定义",
-                                    IsCustom = true,
-                                    IsDirectory = isDir
-                                });
+                                    Name = parts[0],
+                                    TargetPath = parts[1],
+                                    Arguments = parts.Length > 2 ? parts[2] : "",
+                                    WorkingDirectory = parts.Length > 3 ? parts[3] : "",
+                                    DisplayPath = parts[1],
+                                    Category = "自定义",
+                                    IsCustom = true
+                                };
+                                config.CustomApps.Add(app);
                             }
                         }
                     }
                 }
             }
             catch { }
+
+            // Default Quick Apps if empty
+            if (config.CustomApps.Count == 0)
+            {
+                AddDefaultIfFound(config, "Telegram", @"D:\Telegram Desktop\Telegram.exe");
+                AddDefaultIfFound(config, "WPS Office 教育版", @"C:\Users\李振\AppData\Local\Kingsoft\WPS Office\ksolaunch.exe", "/prometheus /fromksolaunch /from=desktop_shortcut");
+                AddDefaultIfFound(config, "百度网盘", @"C:\Users\李振\AppData\Roaming\baidu\BaiduNetdisk\BaiduNetdisk.exe");
+                AddDefaultIfFound(config, "gmaile", @"C:\Users\李振\Desktop\快捷方式\办公学习\gmaile.url");
+                AddDefaultIfFound(config, "腾讯会议", @"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\腾讯会议.lnk");
+                AddDefaultIfFound(config, "Visual Studio Code", @"C:\Users\李振\AppData\Local\Programs\Microsoft VS Code\Code.exe");
+            }
+
             return config;
+        }
+
+        private static void AddDefaultIfFound(AppConfig config, string name, string path, string args = "")
+        {
+            if (File.Exists(path) || Directory.Exists(path))
+            {
+                config.CustomApps.Add(new AppItem
+                {
+                    Name = name,
+                    TargetPath = path,
+                    Arguments = args,
+                    DisplayPath = path,
+                    Category = "常用",
+                    IsCustom = true
+                });
+            }
         }
 
         public static void SaveConfig(AppConfig config)
@@ -192,11 +210,10 @@ namespace FloatingLauncher
 
                 foreach (var app in config.CustomApps)
                 {
-                    sb.AppendLine(string.Format("CustomApp={0}|{1}|{2}|{3}",
-                        app.Name ?? "",
-                        app.TargetPath ?? "",
-                        app.Arguments ?? "",
-                        app.WorkingDirectory ?? ""));
+                    sb.AppendLine("CustomApp=" + (app.Name ?? "") + "|" +
+                                  (app.TargetPath ?? "") + "|" +
+                                  (app.Arguments ?? "") + "|" +
+                                  (app.WorkingDirectory ?? ""));
                 }
 
                 File.WriteAllText(ConfigPath, sb.ToString(), Encoding.UTF8);
@@ -205,9 +222,8 @@ namespace FloatingLauncher
         }
     }
 
-    public partial class MainWindow : Window
+    public class MainWindow : Window
     {
-        // P/Invoke
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
@@ -218,65 +234,42 @@ namespace FloatingLauncher
         private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("user32.dll")]
-        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        private static extern void LockWorkStation();
 
-        [DllImport("user32.dll")]
-        private static extern bool LockWorkStation();
-
-        [DllImport("PowrProf.dll", SetLastError = true)]
-        private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
+        [DllImport("PowrProf.dll", CharSet = CharSet.Auto, ExactSpelling = true)]
+        private static extern bool SetSuspendState(bool hiberate, bool forceCritical, bool disableWakeEvent);
 
         [DllImport("psapi.dll")]
-        private static extern int SetProcessWorkingSetSize(IntPtr process, int minSize, int maxSize);
-
-        [DllImport("dwmapi.dll")]
-        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
-
-        [DllImport("user32.dll")]
-        private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct WindowCompositionAttributeData
-        {
-            public int Attribute;
-            public IntPtr Data;
-            public int SizeOfData;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct AccentPolicy
-        {
-            public int AccentState;
-            public int AccentFlags;
-            public int GradientColor;
-            public int AnimationId;
-        }
+        private static extern int EmptyWorkingSet(IntPtr hwProc);
 
         private const int HOTKEY_ID = 9000;
         private const uint MOD_ALT = 0x0001;
         private const uint MOD_CONTROL = 0x0002;
         private const uint VK_SPACE = 0x20;
 
-        // Quiet Luxury Color Palette (Translucent for Acrylic Glass)
-        private static readonly Color ColorBgFrosted = Color.FromArgb(208, 252, 252, 254);
-        private static readonly Color ColorBgSearch = Color.FromArgb(235, 243, 244, 246);
-        private static readonly Color ColorBgSubtle = Color.FromArgb(175, 246, 247, 249);
-        private static readonly Color ColorBorderSubtle = Color.FromArgb(140, 230, 233, 237);
-        private static readonly Color ColorBorderWindow = Color.FromArgb(180, 255, 255, 255);
+        // Quiet Luxury Crisp Solid Palette (Zero DWM Blur Fringe, Raycast Quality)
+        private static readonly Color ColorBgWindow = Color.FromRgb(255, 255, 255);
+        private static readonly Color ColorBgSearch = Color.FromRgb(245, 246, 249);
+        private static readonly Color ColorBgTile = Color.FromRgb(250, 251, 253);
+        private static readonly Color ColorTileHover = Color.FromRgb(240, 244, 252);
+        private static readonly Color ColorBorderSubtle = Color.FromRgb(228, 232, 238);
+        private static readonly Color ColorBorderWindow = Color.FromRgb(220, 224, 232);
 
-        private static readonly Color ColorTextPrimary = Color.FromRgb(30, 30, 30);
-        private static readonly Color ColorTextSecondary = Color.FromRgb(85, 85, 85);
-        private static readonly Color ColorTextMuted = Color.FromRgb(145, 145, 145);
+        private static readonly Color ColorTextPrimary = Color.FromRgb(28, 30, 36);
+        private static readonly Color ColorTextSecondary = Color.FromRgb(90, 96, 110);
+        private static readonly Color ColorTextMuted = Color.FromRgb(148, 154, 166);
 
-        private static readonly Color ColorMorandiBlue = Color.FromRgb(90, 122, 170);
-        private static readonly Color ColorMorandiGreen = Color.FromRgb(72, 153, 114);
-        private static readonly Color ColorMorandiAmber = Color.FromRgb(196, 154, 86);
-        private static readonly Color ColorMorandiCoral = Color.FromRgb(204, 98, 98);
+        private static readonly Color ColorMorandiBlue = Color.FromRgb(65, 115, 215);
+        private static readonly Color ColorMorandiGreen = Color.FromRgb(52, 168, 83);
+        private static readonly Color ColorMorandiAmber = Color.FromRgb(220, 140, 35);
+        private static readonly Color ColorMorandiCoral = Color.FromRgb(225, 75, 75);
 
         // Core UI elements
         private Border mainBorder;
         private ScaleTransform windowScaleTransform;
         private TextBox searchBox;
+        private TextBlock searchWatermark;
+        private Button clearBtn;
         private StackPanel quickDockSection;
         private UniformGrid quickDockGrid;
         private ScrollViewer scrollViewer;
@@ -295,17 +288,6 @@ namespace FloatingLauncher
         // Tray Icon & AutoStart
         private NotifyIcon trayIcon;
         private ToolStripMenuItem autoStartMenuItem;
-        private bool isExiting = false;
-
-        public static void TrimMemory()
-        {
-            try
-            {
-                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
-                SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, -1, -1);
-            }
-            catch { }
-        }
 
         public MainWindow()
         {
@@ -315,25 +297,26 @@ namespace FloatingLauncher
             LoadIndexedApps();
             UpdateQuickDock();
             FilterResults("");
-
-            Deactivated += (s, e) => TrimMemory();
         }
 
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            windowHandle = new WindowInteropHelper(this).Handle;
-            HwndSource source = HwndSource.FromHwnd(windowHandle);
+            var helper = new WindowInteropHelper(this);
+            windowHandle = helper.Handle;
+
+            var source = HwndSource.FromHwnd(windowHandle);
             if (source != null)
             {
                 source.AddHook(HwndHook);
             }
+
+            // Register Alt + Space (Fallback to Ctrl + Alt + Space if occupied)
             if (!RegisterHotKey(windowHandle, HOTKEY_ID, MOD_ALT, VK_SPACE))
             {
                 RegisterHotKey(windowHandle, HOTKEY_ID, MOD_ALT | MOD_CONTROL, VK_SPACE);
             }
 
-            EnableBackdropBlur(windowHandle);
             InitTrayIcon();
         }
 
@@ -349,42 +332,6 @@ namespace FloatingLauncher
                 trayIcon.Dispose();
             }
             base.OnClosed(e);
-        }
-
-        private void EnableBackdropBlur(IntPtr hwnd)
-        {
-            try
-            {
-                // 1. Windows 11 Build 22621+ SystemBackdrop (3 = Acrylic, 2 = Mica)
-                int backdropType = 3;
-                int hr = DwmSetWindowAttribute(hwnd, 38, ref backdropType, sizeof(int));
-                if (hr == 0) return;
-
-                // 2. Windows 11 Host Backdrop (attr 17)
-                int hostBackdrop = 1;
-                hr = DwmSetWindowAttribute(hwnd, 17, ref hostBackdrop, sizeof(int));
-                if (hr == 0) return;
-
-                // 3. Fallback: AccentPolicy (Win10 / Win11 Accent Acrylic)
-                var policy = new AccentPolicy
-                {
-                    AccentState = 4, // Acrylic
-                    AccentFlags = 2,
-                    GradientColor = 0x66FFFFFF
-                };
-                int size = Marshal.SizeOf(policy);
-                IntPtr pPolicy = Marshal.AllocHGlobal(size);
-                Marshal.StructureToPtr(policy, pPolicy, false);
-                var data = new WindowCompositionAttributeData
-                {
-                    Attribute = 19,
-                    Data = pPolicy,
-                    SizeOfData = size
-                };
-                SetWindowCompositionAttribute(hwnd, ref data);
-                Marshal.FreeHGlobal(pPolicy);
-            }
-            catch { }
         }
 
         private static bool IsAutoStartEnabled()
@@ -428,27 +375,29 @@ namespace FloatingLauncher
             {
                 trayIcon = new NotifyIcon();
                 trayIcon.Text = "桌面极速悬浮启动器 (Alt + Space)";
+
                 try
                 {
-                    trayIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName) ?? System.Drawing.SystemIcons.Application;
+                    string exePath = Process.GetCurrentProcess().MainModule.FileName;
+                    trayIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
                 }
                 catch
                 {
-                    trayIcon.Icon = System.Drawing.SystemIcons.Application;
+                    trayIcon.Icon = SystemIcons.Application;
                 }
-                trayIcon.Visible = true;
 
                 var menu = new ContextMenuStrip();
                 var showItem = new ToolStripMenuItem("🚀 呼出启动器 (Alt + Space)");
+                showItem.Font = new System.Drawing.Font(menu.Font, System.Drawing.FontStyle.Bold);
                 showItem.Click += (s, e) => ShowLauncher();
 
-                var reloadItem = new ToolStripMenuItem("🔄 重新扫描全盘应用与文件夹");
+                var reloadItem = new ToolStripMenuItem("🔄 重新扫描资源");
                 reloadItem.Click += (s, e) =>
                 {
                     LoadIndexedApps();
                     UpdateQuickDock();
                     FilterResults(searchBox.Text);
-                    ShowTemporaryStatus("已重新扫描完成！共 " + allIndexedApps.Count + " 项");
+                    ShowTemporaryStatus("已刷新！收录 " + allIndexedApps.Count + " 项资源");
                 };
 
                 autoStartMenuItem = new ToolStripMenuItem("⚡ 开机自启动");
@@ -461,24 +410,27 @@ namespace FloatingLauncher
                     ShowTemporaryStatus(newState ? "已开启开机自启动" : "已关闭开机自启动");
                 };
 
-                var exitItem = new ToolStripMenuItem("❌ 退出程序");
+                var exitItem = new ToolStripMenuItem("✕ 退出程序");
                 exitItem.Click += (s, e) =>
                 {
-                    isExiting = true;
-                    trayIcon.Visible = false;
-                    trayIcon.Dispose();
+                    if (trayIcon != null)
+                    {
+                        trayIcon.Visible = false;
+                        trayIcon.Dispose();
+                    }
                     Application.Current.Shutdown();
                 };
 
                 menu.Items.Add(showItem);
-                menu.Items.Add(reloadItem);
                 menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add(reloadItem);
                 menu.Items.Add(autoStartMenuItem);
                 menu.Items.Add(new ToolStripSeparator());
                 menu.Items.Add(exitItem);
 
                 trayIcon.ContextMenuStrip = menu;
                 trayIcon.DoubleClick += (s, e) => ShowLauncher();
+                trayIcon.Visible = true;
             }
             catch { }
         }
@@ -494,36 +446,7 @@ namespace FloatingLauncher
             return IntPtr.Zero;
         }
 
-        public void ShowLauncher()
-        {
-            WindowState = WindowState.Normal;
-            Visibility = Visibility.Visible;
-            Show();
-            Activate();
-            Topmost = true;
-            Topmost = config.IsTopmost;
-            SetForegroundWindow(windowHandle);
-            searchBox.Focus();
-            searchBox.SelectAll();
-
-            // 120ms pop-in micro-animation
-            if (windowScaleTransform != null && mainBorder != null)
-            {
-                var scaleAnim = new DoubleAnimation(0.96, 1.0, TimeSpan.FromMilliseconds(120))
-                {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                };
-                var opacityAnim = new DoubleAnimation(0.3, 1.0, TimeSpan.FromMilliseconds(120))
-                {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                };
-                windowScaleTransform.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
-                windowScaleTransform.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
-                mainBorder.BeginAnimation(UIElement.OpacityProperty, opacityAnim);
-            }
-        }
-
-        private void ToggleWindowVisibility()
+        public void ToggleWindowVisibility()
         {
             if (Visibility == Visibility.Visible && IsActive && WindowState == WindowState.Normal)
             {
@@ -536,17 +459,48 @@ namespace FloatingLauncher
             }
         }
 
+        public void ShowLauncher()
+        {
+            WindowState = WindowState.Normal;
+            Visibility = Visibility.Visible;
+            Show();
+            Activate();
+            Topmost = true;
+            Topmost = config.IsTopmost;
+            SetForegroundWindow(windowHandle);
+            searchBox.Focus();
+            searchBox.SelectAll();
+
+            // 120ms pop-in animation
+            if (windowScaleTransform != null && mainBorder != null)
+            {
+                var scaleAnim = new DoubleAnimation(0.96, 1.0, TimeSpan.FromMilliseconds(120))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                };
+                windowScaleTransform.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
+                windowScaleTransform.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
+
+                var opacityAnim = new DoubleAnimation(0.0, 1.0, TimeSpan.FromMilliseconds(120))
+                {
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+                };
+                mainBorder.BeginAnimation(UIElement.OpacityProperty, opacityAnim);
+            }
+        }
+
         private void InitializeComponent()
         {
             Title = "极速启动";
-            Width = 590;
+            Width = 640;
             SizeToContent = SizeToContent.Height;
-            MinHeight = 120;
-            MaxHeight = 630;
+            MinHeight = 140;
+            MaxHeight = 650;
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
             ShowInTaskbar = false;
+            Topmost = config.IsTopmost;
             WindowStartupLocation = WindowStartupLocation.Manual;
 
             if (config.WindowLeft > 0 && config.WindowTop > 0)
@@ -560,30 +514,30 @@ namespace FloatingLauncher
                 Top = SystemParameters.PrimaryScreenHeight * 0.22;
             }
 
-            // Outer Frame with Frosted Glass Acrylic & Quiet Luxury Styling
+            // Outer Frame: Pure Crisp White with Soft High-End Ambient Shadow (Zero Blur Fringe)
             mainBorder = new Border
             {
                 CornerRadius = new CornerRadius(16),
-                Background = new SolidColorBrush(ColorBgFrosted),
+                Background = new SolidColorBrush(ColorBgWindow),
                 BorderBrush = new SolidColorBrush(ColorBorderWindow),
                 BorderThickness = new Thickness(1.2),
                 Margin = new Thickness(16),
                 Effect = new DropShadowEffect
                 {
-                    Color = Color.FromArgb(60, 0, 0, 0),
+                    Color = Color.FromArgb(45, 0, 0, 0),
                     BlurRadius = 26,
-                    ShadowDepth = 6,
+                    ShadowDepth = 5,
                     Direction = 270,
-                    Opacity = 0.35
+                    Opacity = 0.28
                 }
             };
 
-            // Scale transform for 120ms pop-in animation
+            // Scale transform for pop-in animation
             windowScaleTransform = new ScaleTransform(1.0, 1.0);
             mainBorder.RenderTransform = windowScaleTransform;
             mainBorder.RenderTransformOrigin = new Point(0.5, 0.5);
 
-            // Allow dragging window from anywhere on the border
+            // Allow dragging window from anywhere on the frame
             mainBorder.MouseLeftButtonDown += (s, e) =>
             {
                 if (e.ButtonState == MouseButtonState.Pressed)
@@ -592,7 +546,7 @@ namespace FloatingLauncher
                 }
             };
 
-            // Drag & Drop Files/Folders
+            // Drag & Drop Files/Folders to add to launcher
             mainBorder.AllowDrop = true;
             mainBorder.DragOver += (s, e) =>
             {
@@ -664,7 +618,7 @@ namespace FloatingLauncher
                 ShowTemporaryStatus("已刷新！共收录 " + allIndexedApps.Count + " 项");
             });
 
-            var closeBtn = CreateMinimalHeaderBtn("✕", "关闭窗口 (Esc 最小化，后台常驻)", (s, e) =>
+            var closeBtn = CreateMinimalHeaderBtn("✕", "隐藏窗口 (Esc 最小化，后台常驻)", (s, e) =>
             {
                 Hide();
                 TrimMemory();
@@ -706,6 +660,20 @@ namespace FloatingLauncher
             Grid.SetColumn(searchIcon, 0);
             searchGrid.Children.Add(searchIcon);
 
+            // Column 1: Grid containing Watermark TextBlock + Input TextBox
+            var searchInputContainer = new Grid();
+            Grid.SetColumn(searchInputContainer, 1);
+
+            searchWatermark = new TextBlock
+            {
+                Text = "搜索软件、拼音(txhy)、s-必应、g-谷歌、git-GitHub、算式...",
+                FontSize = 13,
+                Foreground = new SolidColorBrush(ColorTextMuted),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            };
+            searchInputContainer.Children.Add(searchWatermark);
+
             searchBox = new TextBox
             {
                 FontSize = 13.5,
@@ -716,12 +684,19 @@ namespace FloatingLauncher
                 VerticalAlignment = VerticalAlignment.Center,
                 FocusVisualStyle = null
             };
-            searchBox.TextChanged += (s, e) => FilterResults(searchBox.Text);
+            searchBox.TextChanged += (s, e) =>
+            {
+                bool hasText = !string.IsNullOrEmpty(searchBox.Text);
+                searchWatermark.Visibility = hasText ? Visibility.Collapsed : Visibility.Visible;
+                clearBtn.Visibility = hasText ? Visibility.Visible : Visibility.Collapsed;
+                FilterResults(searchBox.Text);
+            };
             searchBox.KeyDown += SearchBox_KeyDown;
-            Grid.SetColumn(searchBox, 1);
-            searchGrid.Children.Add(searchBox);
+            searchInputContainer.Children.Add(searchBox);
 
-            var clearBtn = new Button
+            searchGrid.Children.Add(searchInputContainer);
+
+            clearBtn = new Button
             {
                 Content = "✕",
                 FontSize = 10,
@@ -759,29 +734,24 @@ namespace FloatingLauncher
             Grid.SetColumn(enterHint, 3);
             searchGrid.Children.Add(enterHint);
 
-            searchBox.TextChanged += (s, e) =>
-            {
-                clearBtn.Visibility = string.IsNullOrEmpty(searchBox.Text) ? Visibility.Collapsed : Visibility.Visible;
-            };
-
             searchBoxContainer.Child = searchGrid;
             Grid.SetRow(searchBoxContainer, 1);
             rootGrid.Children.Add(searchBoxContainer);
 
-            // 3. Quick Dock Section
+            // 3. Quick Dock Section (Default View when search is empty)
             quickDockSection = new StackPanel { Margin = new Thickness(20, 0, 20, 14) };
             var dockHeader = new Grid { Margin = new Thickness(2, 0, 2, 8) };
             var dockTitle = new TextBlock
             {
                 Text = "常用快捷 (Quick Access)",
                 FontSize = 11.5,
-                FontWeight = FontWeights.SemiBold,
+                FontWeight = FontWeights.Medium,
                 Foreground = new SolidColorBrush(ColorTextSecondary)
             };
             var dockHint = new TextBlock
             {
                 Text = "右键管理 · 拖拽文件/文件夹添加",
-                FontSize = 10.5,
+                FontSize = 11,
                 Foreground = new SolidColorBrush(ColorTextMuted),
                 HorizontalAlignment = HorizontalAlignment.Right
             };
@@ -791,10 +761,11 @@ namespace FloatingLauncher
 
             quickDockGrid = new UniformGrid { Columns = 2 };
             quickDockSection.Children.Add(quickDockGrid);
+
             Grid.SetRow(quickDockSection, 2);
             rootGrid.Children.Add(quickDockSection);
 
-            // 4. Dynamic Results Area
+            // 4. Search Results Container (Shown when query is typed)
             scrollViewer = new ScrollViewer
             {
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -803,24 +774,18 @@ namespace FloatingLauncher
                 Margin = new Thickness(20, 0, 20, 12),
                 Visibility = Visibility.Collapsed
             };
-
             resultsContainer = new StackPanel();
             scrollViewer.Content = resultsContainer;
             Grid.SetRow(scrollViewer, 2);
             rootGrid.Children.Add(scrollViewer);
 
-            // 5. Footer Status Bar with Matching 16px Bottom Rounded Corners
-            var footerBorder = new Border
+            // 5. Footer Bar
+            var footerGrid = new Grid
             {
-                BorderBrush = new SolidColorBrush(ColorBorderSubtle),
-                BorderThickness = new Thickness(0, 1, 0, 0),
-                CornerRadius = new CornerRadius(0, 0, 15, 15),
-                Padding = new Thickness(20, 10, 20, 12),
-                Background = new SolidColorBrush(ColorBgSubtle)
+                Margin = new Thickness(20, 4, 20, 14),
+                VerticalAlignment = VerticalAlignment.Center
             };
-            var footerGrid = new Grid();
-
-            var leftFooterStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var footerLeft = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             var statusDot = new Border
             {
                 Width = 6,
@@ -832,49 +797,49 @@ namespace FloatingLauncher
             };
             statusText = new TextBlock
             {
-                Text = "就绪 · s-必应，g-谷歌，git-GitHub，回车启动",
+                Text = "就绪 · 支持 s-必应、g-谷歌、git-GitHub、b-百度、bz-B站 及快捷指令",
                 FontSize = 11,
-                Foreground = new SolidColorBrush(ColorTextSecondary),
+                Foreground = new SolidColorBrush(ColorTextMuted),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            leftFooterStack.Children.Add(statusDot);
-            leftFooterStack.Children.Add(statusText);
-            footerGrid.Children.Add(leftFooterStack);
+            footerLeft.Children.Add(statusDot);
+            footerLeft.Children.Add(statusText);
+            footerGrid.Children.Add(footerLeft);
 
             countBadge = new TextBlock
             {
-                Text = "已收录 0 款应用",
+                Text = "已收录 0 项资源",
                 FontSize = 11,
                 Foreground = new SolidColorBrush(ColorTextMuted),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center
             };
             footerGrid.Children.Add(countBadge);
-            footerBorder.Child = footerGrid;
 
-            Grid.SetRow(footerBorder, 3);
-            rootGrid.Children.Add(footerBorder);
+            Grid.SetRow(footerGrid, 3);
+            rootGrid.Children.Add(footerGrid);
 
             mainBorder.Child = rootGrid;
             Content = mainBorder;
 
-            LocationChanged += (s, e) =>
+            // Global Window Key Handling
+            KeyDown += MainWindow_KeyDown;
+            Deactivated += (s, e) =>
             {
-                config.WindowLeft = Left;
-                config.WindowTop = Top;
-            };
-
-            Closing += (s, e) =>
-            {
-                config.WindowLeft = Left;
-                config.WindowTop = Top;
-                ConfigManager.SaveConfig(config);
-
-                if (!isExiting)
+                if (!Topmost && Visibility == Visibility.Visible)
                 {
-                    e.Cancel = true;
                     Hide();
                     TrimMemory();
+                }
+            };
+
+            LocationChanged += (s, e) =>
+            {
+                if (WindowState == WindowState.Normal)
+                {
+                    config.WindowLeft = Left;
+                    config.WindowTop = Top;
+                    ConfigManager.SaveConfig(config);
                 }
             };
 
@@ -884,12 +849,12 @@ namespace FloatingLauncher
             };
         }
 
-        private Button CreateMinimalHeaderBtn(string icon, string tooltip, RoutedEventHandler onClick)
+        private Button CreateMinimalHeaderBtn(string content, string toolTip, RoutedEventHandler onClick)
         {
             var btn = new Button
             {
-                Content = icon,
-                ToolTip = tooltip,
+                Content = content,
+                ToolTip = toolTip,
                 FontSize = 12,
                 Width = 28,
                 Height = 28,
@@ -900,21 +865,20 @@ namespace FloatingLauncher
                 Cursor = Cursors.Hand,
                 FocusVisualStyle = null
             };
-            var template = new ControlTemplate(typeof(Button));
-            var borderFactory = new FrameworkElementFactory(typeof(Border));
-            borderFactory.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
-            borderFactory.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Button.BackgroundProperty));
-            var contentPresenter = new FrameworkElementFactory(typeof(ContentPresenter));
-            contentPresenter.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-            contentPresenter.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
-            borderFactory.AppendChild(contentPresenter);
-            template.VisualTree = borderFactory;
-            btn.Template = template;
-
             btn.MouseEnter += (s, e) => btn.Background = new SolidColorBrush(ColorBgSearch);
             btn.MouseLeave += (s, e) => btn.Background = Brushes.Transparent;
             btn.Click += onClick;
             return btn;
+        }
+
+        private void MainWindow_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape)
+            {
+                Hide();
+                TrimMemory();
+                e.Handled = true;
+            }
         }
 
         private void MainWindow_Drop(object sender, DragEventArgs e)
@@ -926,10 +890,11 @@ namespace FloatingLauncher
                 {
                     foreach (string file in files)
                     {
-                        AppItem newApp;
+                        AppItem newApp = null;
                         if (Directory.Exists(file))
                         {
-                            string dirName = new DirectoryInfo(file).Name;
+                            string dirName = System.IO.Path.GetFileName(file);
+                            if (string.IsNullOrEmpty(dirName)) dirName = file;
                             newApp = new AppItem
                             {
                                 Name = dirName,
@@ -946,7 +911,7 @@ namespace FloatingLauncher
                         else if (file.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
                         {
                             newApp = ParseShortcut(file);
-                            newApp.IsCustom = true;
+                            if (newApp != null) newApp.IsCustom = true;
                         }
                         else
                         {
@@ -961,11 +926,15 @@ namespace FloatingLauncher
                                 DisplayPath = file,
                                 Category = "自定义",
                                 IsCustom = true,
-                                IconSource = GetFileIcon(file)
+                                IconSource = GetFileIcon(file, name)
                             };
                         }
-                        config.CustomApps.Add(newApp);
-                        allIndexedApps.Insert(0, newApp);
+
+                        if (newApp != null)
+                        {
+                            config.CustomApps.Add(newApp);
+                            allIndexedApps.Insert(0, newApp);
+                        }
                     }
                     ConfigManager.SaveConfig(config);
                     UpdateQuickDock();
@@ -1022,10 +991,10 @@ namespace FloatingLauncher
         {
             var border = new Border
             {
-                Height = 44,
+                Height = 46,
                 Margin = new Thickness(4, 3, 4, 3),
-                Padding = new Thickness(10, 6, 10, 6),
-                Background = new SolidColorBrush(ColorBgSubtle),
+                Padding = new Thickness(10, 6, 12, 6),
+                Background = new SolidColorBrush(ColorBgTile),
                 BorderBrush = new SolidColorBrush(ColorBorderSubtle),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(8),
@@ -1038,24 +1007,27 @@ namespace FloatingLauncher
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
+            var iconImg = new System.Windows.Controls.Image
+            {
+                Width = 20,
+                Height = 20,
+                Source = app.IconSource ?? GetStockIcon(),
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            RenderOptions.SetBitmapScalingMode(iconImg, BitmapScalingMode.HighQuality);
+
             var iconBox = new Border
             {
-                Width = 26,
-                Height = 26,
-                CornerRadius = new CornerRadius(5),
+                Width = 28,
+                Height = 28,
+                CornerRadius = new CornerRadius(6),
                 Background = Brushes.White,
                 BorderBrush = new SolidColorBrush(ColorBorderSubtle),
                 BorderThickness = new Thickness(1),
-                Margin = new Thickness(0, 0, 8, 0),
+                Margin = new Thickness(0, 0, 10, 0),
                 VerticalAlignment = VerticalAlignment.Center,
-                Child = new System.Windows.Controls.Image
-                {
-                    Width = 18,
-                    Height = 18,
-                    Source = app.IconSource ?? GetStockIcon(),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    HorizontalAlignment = HorizontalAlignment.Center
-                }
+                Child = iconImg
             };
             Grid.SetColumn(iconBox, 0);
             grid.Children.Add(iconBox);
@@ -1068,7 +1040,7 @@ namespace FloatingLauncher
             var nameBlock = new TextBlock
             {
                 Text = app.Name,
-                FontSize = 12,
+                FontSize = 12.5,
                 FontWeight = FontWeights.Medium,
                 Foreground = new SolidColorBrush(ColorTextPrimary),
                 TextTrimming = TextTrimming.CharacterEllipsis
@@ -1080,7 +1052,7 @@ namespace FloatingLauncher
             var arrowBlock = new TextBlock
             {
                 Text = "›",
-                FontSize = 13,
+                FontSize = 14,
                 Foreground = new SolidColorBrush(ColorTextMuted),
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Right
@@ -1092,12 +1064,12 @@ namespace FloatingLauncher
 
             border.MouseEnter += (s, e) =>
             {
-                border.Background = new SolidColorBrush(Color.FromArgb(30, 90, 122, 170));
+                border.Background = new SolidColorBrush(ColorTileHover);
                 border.BorderBrush = new SolidColorBrush(ColorMorandiBlue);
             };
             border.MouseLeave += (s, e) =>
             {
-                border.Background = new SolidColorBrush(ColorBgSubtle);
+                border.Background = new SolidColorBrush(ColorBgTile);
                 border.BorderBrush = new SolidColorBrush(ColorBorderSubtle);
             };
 
@@ -1106,57 +1078,52 @@ namespace FloatingLauncher
                 LaunchApp(app);
             };
 
-            border.ContextMenu = CreateAppContextMenu(app);
+            // Right-click context menu
+            border.ContextMenu = CreateDockCardContextMenu(app);
 
             return border;
         }
 
-        private ContextMenu CreateAppContextMenu(AppItem app)
+        private System.Windows.Controls.ContextMenu CreateDockCardContextMenu(AppItem app)
         {
-            var menu = new ContextMenu();
+            var menu = new System.Windows.Controls.ContextMenu();
 
-            var openItem = new MenuItem { Header = "🚀 立即打开" };
+            var openItem = new System.Windows.Controls.MenuItem { Header = "🚀 立即启动" };
             openItem.Click += (s, e) => LaunchApp(app);
             menu.Items.Add(openItem);
 
-            if (!app.IsDirectory && !app.IsWebSearch && !app.IsSystemCommand)
+            var openLocItem = new System.Windows.Controls.MenuItem { Header = "📂 打开所在文件夹" };
+            openLocItem.Click += (s, e) =>
             {
-                var adminItem = new MenuItem { Header = "🛡️ 以管理员身份运行" };
-                adminItem.Click += (s, e) => LaunchAppAdmin(app);
-                menu.Items.Add(adminItem);
-            }
-
-            var dirItem = new MenuItem { Header = "📂 打开所在目录" };
-            dirItem.Click += (s, e) => OpenContainingFolder(app);
-            menu.Items.Add(dirItem);
-
-            var copyItem = new MenuItem { Header = "📋 复制完整路径" };
-            copyItem.Click += (s, e) =>
-            {
-                string p = app.TargetPath ?? app.DisplayPath;
-                if (!string.IsNullOrEmpty(p))
+                try
                 {
-                    Clipboard.SetText(p);
-                    ShowTemporaryStatus("已复制路径: " + p);
+                    string target = !string.IsNullOrEmpty(app.TargetPath) ? app.TargetPath : app.DisplayPath;
+                    if (File.Exists(target))
+                    {
+                        Process.Start("explorer.exe", "/select,\"" + target + "\"");
+                    }
+                    else if (Directory.Exists(target))
+                    {
+                        Process.Start("explorer.exe", "\"" + target + "\"");
+                    }
                 }
+                catch { }
             };
-            menu.Items.Add(copyItem);
+            menu.Items.Add(openLocItem);
 
-            if (app.IsCustom)
+            menu.Items.Add(new System.Windows.Controls.Separator());
+
+            var deleteItem = new System.Windows.Controls.MenuItem { Header = "✕ 从常用快捷中移除" };
+            deleteItem.Click += (s, e) =>
             {
-                menu.Items.Add(new Separator());
-                var deleteItem = new MenuItem { Header = "🗑️ 从列表中移除" };
-                deleteItem.Click += (s, e) =>
-                {
-                    config.CustomApps.Remove(app);
-                    allIndexedApps.Remove(app);
-                    ConfigManager.SaveConfig(config);
-                    UpdateQuickDock();
-                    FilterResults(searchBox.Text);
-                    ShowTemporaryStatus("已移除: " + app.Name);
-                };
-                menu.Items.Add(deleteItem);
-            }
+                config.CustomApps.Remove(app);
+                allIndexedApps.Remove(app);
+                ConfigManager.SaveConfig(config);
+                UpdateQuickDock();
+                FilterResults(searchBox.Text);
+                ShowTemporaryStatus("已移除: " + app.Name);
+            };
+            menu.Items.Add(deleteItem);
 
             return menu;
         }
@@ -1183,11 +1150,10 @@ namespace FloatingLauncher
                 allIndexedApps.Add(new AppItem
                 {
                     Name = "腾讯会议",
-                    PinyinInitials = GetPinyinInitials("腾讯会议"),
+                    PinyinInitials = "txhy",
                     TargetPath = wemeetPath,
-                    WorkingDirectory = @"D:\新建文件夹\WeMeet",
                     DisplayPath = wemeetPath,
-                    Category = "已安装应用"
+                    Category = "应用"
                 });
             }
 
@@ -1211,6 +1177,7 @@ namespace FloatingLauncher
                                 Name = dirName,
                                 PinyinInitials = GetPinyinInitials(dirName),
                                 TargetPath = subDir,
+                                WorkingDirectory = subDir,
                                 DisplayPath = subDir,
                                 Category = "桌面文件夹",
                                 IsDirectory = true,
@@ -1247,124 +1214,158 @@ namespace FloatingLauncher
             string quickLaunch = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Internet Explorer\Quick Launch");
             if (Directory.Exists(quickLaunch))
             {
-                ScanDirectoryShortcuts(quickLaunch, SearchOption.AllDirectories);
+                ScanDirectoryShortcuts(quickLaunch, SearchOption.TopDirectoryOnly);
             }
 
-            // 8. System Registered App Paths (Registry)
-            try
+            // 8. Pinned Taskbar Apps
+            string pinnedTaskbar = System.IO.Path.Combine(quickLaunch, @"User Pinned\TaskBar");
+            if (Directory.Exists(pinnedTaskbar))
             {
-                using (var hklm = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"))
-                {
-                    if (hklm != null)
-                    {
-                        foreach (string subKeyName in hklm.GetSubKeyNames())
-                        {
-                            try
-                            {
-                                using (var appKey = hklm.OpenSubKey(subKeyName))
-                                {
-                                    string exePath = appKey.GetValue(null) as string;
-                                    if (!string.IsNullOrEmpty(exePath))
-                                    {
-                                        exePath = exePath.Trim('"');
-                                        if (File.Exists(exePath))
-                                        {
-                                            string name = System.IO.Path.GetFileNameWithoutExtension(exePath);
-                                            if (name.StartsWith("unins", StringComparison.OrdinalIgnoreCase) || 
-                                                name.StartsWith("setup", StringComparison.OrdinalIgnoreCase) ||
-                                                name.StartsWith("install", StringComparison.OrdinalIgnoreCase)) continue;
-
-                                            if (!allIndexedApps.Any(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-                                            {
-                                                allIndexedApps.Add(new AppItem
-                                                {
-                                                    Name = name,
-                                                    PinyinInitials = GetPinyinInitials(name),
-                                                    TargetPath = exePath,
-                                                    WorkingDirectory = System.IO.Path.GetDirectoryName(exePath),
-                                                    DisplayPath = exePath,
-                                                    Category = "已安装应用"
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                }
+                ScanDirectoryShortcuts(pinnedTaskbar, SearchOption.TopDirectoryOnly);
             }
-            catch { }
 
-            // 9. System Built-in Tools
-            var systemTools = new List<Tuple<string, string, string>>
-            {
-                Tuple.Create("命令提示符 (CMD)", "cmd.exe", "系统工具"),
-                Tuple.Create("PowerShell 终端", "powershell.exe", "系统工具"),
-                Tuple.Create("计算器", "calc.exe", "系统工具"),
-                Tuple.Create("记事本", "notepad.exe", "系统工具"),
-                Tuple.Create("任务管理器", "taskmgr.exe", "系统工具"),
-                Tuple.Create("控制面板", "control.exe", "系统工具"),
-                Tuple.Create("文件资源管理器", "explorer.exe", "系统工具"),
-                Tuple.Create("系统截图", "snippingtool.exe", "系统工具"),
-                Tuple.Create("画图", "mspaint.exe", "系统工具"),
-                Tuple.Create("注册表编辑器", "regedit.exe", "系统工具"),
-                Tuple.Create("磁盘清理", "cleanmgr.exe", "系统工具"),
-                Tuple.Create("远程桌面连接", "mstsc.exe", "系统工具")
-            };
+            // 9. Standard Windows Tools
+            AddSystemTool("计算器", "calc.exe", "jsq", "系统工具");
+            AddSystemTool("记事本", "notepad.exe", "jsb", "系统工具");
+            AddSystemTool("画图", "mspaint.exe", "ht", "系统工具");
+            AddSystemTool("任务管理器", "taskmgr.exe", "rwglq", "系统工具");
+            AddSystemTool("控制面板", "control.exe", "kzmb", "系统工具");
+            AddSystemTool("命令提示符 (CMD)", "cmd.exe", "cmd", "开发与系统");
+            AddSystemTool("PowerShell 终端", "powershell.exe", "ps", "开发与系统");
+            AddSystemTool("注册表编辑器", "regedit.exe", "zcb", "开发与系统");
+            AddSystemTool("远程桌面连接", "mstsc.exe", "yczm", "系统工具");
+            AddSystemTool("截图工具", "snippingtool.exe", "jt", "系统工具");
 
-            foreach (var st in systemTools)
-            {
-                if (!allIndexedApps.Any(a => a.Name.IndexOf(st.Item1, StringComparison.OrdinalIgnoreCase) >= 0))
-                {
-                    allIndexedApps.Add(new AppItem
-                    {
-                        Name = st.Item1,
-                        PinyinInitials = GetPinyinInitials(st.Item1),
-                        TargetPath = st.Item2,
-                        DisplayPath = st.Item2,
-                        Category = st.Item3
-                    });
-                }
-            }
+            // 10. Scan Popular Install Paths
+            ScanPopularAppPaths();
 
             countBadge.Text = "已收录 " + allIndexedApps.Count + " 项资源";
         }
 
-        private void ScanDirectoryShortcuts(string dir, SearchOption searchOption)
+        private void AddSystemTool(string name, string exeName, string pinyin, string category)
+        {
+            if (allIndexedApps.Any(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return;
+            string sysDir = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            string fullPath = System.IO.Path.Combine(sysDir, exeName);
+
+            allIndexedApps.Add(new AppItem
+            {
+                Name = name,
+                PinyinInitials = pinyin,
+                TargetPath = fullPath,
+                DisplayPath = exeName,
+                Category = category,
+                IconSource = GetFileIcon(fullPath, name)
+            });
+        }
+
+        private void ScanPopularAppPaths()
+        {
+            var searchPaths = new List<string>
+            {
+                @"C:\Program Files",
+                @"C:\Program Files (x86)",
+                @"C:\Users\" + Environment.UserName + @"\AppData\Local\Programs"
+            };
+
+            var popularExes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "code.exe", "Visual Studio Code" },
+                { "chrome.exe", "Google Chrome" },
+                { "msedge.exe", "Microsoft Edge" },
+                { "wechat.exe", "微信" },
+                { "qq.exe", "QQ" },
+                { "dingtalk.exe", "钉钉" },
+                { "wemeetapp.exe", "腾讯会议" },
+                { "feishu.exe", "飞书" },
+                { "telegram.exe", "Telegram" },
+                { "notion.exe", "Notion" },
+                { "obsidian.exe", "Obsidian" },
+                { "typora.exe", "Typora" },
+                { "postman.exe", "Postman" },
+                { "git-bash.exe", "Git Bash" },
+                { "navicat.exe", "Navicat" },
+                { "dbeaver.exe", "DBeaver" },
+                { "sublime_text.exe", "Sublime Text" },
+                { "steam.exe", "Steam" }
+            };
+
+            foreach (var basePath in searchPaths)
+            {
+                if (!Directory.Exists(basePath)) continue;
+                try
+                {
+                    foreach (var dir in Directory.GetDirectories(basePath))
+                    {
+                        try
+                        {
+                            var files = Directory.GetFiles(dir, "*.exe", SearchOption.TopDirectoryOnly);
+                            foreach (var f in files)
+                            {
+                                string exe = System.IO.Path.GetFileName(f);
+                                if (popularExes.ContainsKey(exe))
+                                {
+                                    string friendlyName = popularExes[exe];
+                                    if (!allIndexedApps.Any(a => a.Name.Equals(friendlyName, StringComparison.OrdinalIgnoreCase)))
+                                    {
+                                        allIndexedApps.Add(new AppItem
+                                        {
+                                            Name = friendlyName,
+                                            PinyinInitials = GetPinyinInitials(friendlyName),
+                                            TargetPath = f,
+                                            WorkingDirectory = dir,
+                                            DisplayPath = f,
+                                            Category = "应用",
+                                            IconSource = GetFileIcon(f, friendlyName)
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private void ScanDirectoryShortcuts(string directory, SearchOption option)
         {
             try
             {
-                if (!Directory.Exists(dir)) return;
-                foreach (string file in Directory.GetFiles(dir, "*.lnk", searchOption))
+                var lnks = Directory.GetFiles(directory, "*.lnk", option);
+                foreach (var lnk in lnks)
                 {
-                    AddShortcutSafe(file);
+                    AddShortcutSafe(lnk);
                 }
-                foreach (string urlFile in Directory.GetFiles(dir, "*.url", searchOption))
+
+                var urls = Directory.GetFiles(directory, "*.url", option);
+                foreach (var url in urls)
                 {
-                    AddUrlSafe(urlFile);
+                    AddUrlShortcutSafe(url);
                 }
             }
             catch { }
         }
 
-        private void AddUrlSafe(string file)
+        private void AddUrlShortcutSafe(string file)
         {
             try
             {
                 string name = System.IO.Path.GetFileNameWithoutExtension(file);
                 if (allIndexedApps.Any(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return;
-                string url = "";
+
                 string[] lines = File.ReadAllLines(file);
-                foreach (string line in lines)
+                string url = "";
+                foreach (var l in lines)
                 {
-                    if (line.StartsWith("URL=", StringComparison.OrdinalIgnoreCase))
+                    if (l.StartsWith("URL=", StringComparison.OrdinalIgnoreCase))
                     {
-                        url = line.Substring(4).Trim();
+                        url = l.Substring(4).Trim();
                         break;
                     }
                 }
+
                 if (!string.IsNullOrEmpty(url))
                 {
                     allIndexedApps.Add(new AppItem
@@ -1375,7 +1376,7 @@ namespace FloatingLauncher
                         DisplayPath = url,
                         Category = "网页",
                         OriginalLnkPath = file,
-                        IconSource = GetFileIcon(file)
+                        IconSource = GetWebIcon(name)
                     });
                 }
             }
@@ -1458,7 +1459,8 @@ namespace FloatingLauncher
                         WorkingDirectory = workDir,
                         OriginalLnkPath = lnkPath,
                         DisplayPath = !string.IsNullOrEmpty(target) ? target : lnkPath,
-                        Category = "快捷方式"
+                        Category = "快捷方式",
+                        IconSource = GetFileIcon(!string.IsNullOrEmpty(target) && File.Exists(target) ? target : lnkPath, name)
                     };
                 }
             }
@@ -1469,54 +1471,53 @@ namespace FloatingLauncher
                 Name = System.IO.Path.GetFileNameWithoutExtension(lnkPath),
                 PinyinInitials = GetPinyinInitials(System.IO.Path.GetFileNameWithoutExtension(lnkPath)),
                 TargetPath = lnkPath,
-                Arguments = "",
-                WorkingDirectory = "",
                 OriginalLnkPath = lnkPath,
                 DisplayPath = lnkPath,
-                Category = "快捷方式"
+                Category = "快捷方式",
+                IconSource = GetFileIcon(lnkPath, System.IO.Path.GetFileNameWithoutExtension(lnkPath))
             };
         }
 
-        private static bool TryEvaluateMath(string query, out double mathResult, out string expression)
+        private static string EvaluateMathExpression(string expr)
         {
-            mathResult = 0;
-            expression = "";
-            if (string.IsNullOrWhiteSpace(query)) return false;
-
-            string q = query.Trim();
-            bool hasOp = q.Any(c => c == '+' || c == '-' || c == '*' || c == '/' || c == '(' || c == ')');
-            if (!hasOp) return false;
-            bool validChars = q.All(c => char.IsDigit(c) || c == '.' || c == '+' || c == '-' || c == '*' || c == '/' || c == '(' || c == ')' || c == ' ');
-            if (!validChars) return false;
-
             try
             {
-                var dt = new DataTable();
-                object val = dt.Compute(q, null);
-                if (val != null && double.TryParse(val.ToString(), out mathResult))
+                string cleanExpr = expr.Trim().Replace(" ", "");
+                if (string.IsNullOrEmpty(cleanExpr)) return null;
+
+                bool hasOperator = false;
+                bool hasDigit = false;
+                foreach (char c in cleanExpr)
                 {
-                    if (!double.IsInfinity(mathResult) && !double.IsNaN(mathResult))
+                    if (char.IsDigit(c)) hasDigit = true;
+                    else if (c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '^') hasOperator = true;
+                    else if (c != '.' && c != '(' && c != ')') return null;
+                }
+
+                if (!hasDigit || !hasOperator) return null;
+
+                using (var table = new DataTable())
+                {
+                    object result = table.Compute(cleanExpr, "");
+                    if (result != null && result != DBNull.Value)
                     {
-                        expression = q;
-                        return true;
+                        return result.ToString();
                     }
                 }
             }
             catch { }
-            return false;
+            return null;
         }
 
-        private static string GetLocalIpAddress()
+        private static string GetLocalIPAddress()
         {
             try
             {
-                var host = Dns.GetHostEntry(Dns.GetHostName());
-                foreach (var ip in host.AddressList)
+                using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
                 {
-                    if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
-                    {
-                        return ip.ToString();
-                    }
+                    socket.Connect("8.8.8.8", 65530);
+                    IPEndPoint endPoint = socket.LocalEndPoint as IPEndPoint;
+                    if (endPoint != null) return endPoint.Address.ToString();
                 }
             }
             catch { }
@@ -1648,8 +1649,8 @@ namespace FloatingLauncher
             {
                 displayedApps.Add(new AppItem
                 {
-                    Name = "立即重启计算机 🔄",
-                    DisplayPath = "执行 Windows 安全重启 (shutdown -r)",
+                    Name = "重新启动计算机 🔄",
+                    DisplayPath = "执行 shutdown.exe -r -t 0 重启系统",
                     Category = "系统控制 ⚡",
                     IsSystemCommand = true,
                     SystemCommandAction = () => Process.Start("shutdown.exe", "-r -t 0")
@@ -1659,95 +1660,141 @@ namespace FloatingLauncher
             {
                 displayedApps.Add(new AppItem
                 {
-                    Name = "立即关闭计算机 🛑",
-                    DisplayPath = "执行 Windows 系统关机 (shutdown -s)",
+                    Name = "关闭计算机 ⏻",
+                    DisplayPath = "执行 shutdown.exe -s -t 0 立即关机",
                     Category = "系统控制 ⚡",
                     IsSystemCommand = true,
                     SystemCommandAction = () => Process.Start("shutdown.exe", "-s -t 0")
                 });
             }
-            else if (qLower == "ip" || qLower == "ipconfig" || qLower == "本机ip")
+            else if (qLower == "ip" || qLower == "myip" || qLower == "ipaddress")
             {
-                string ip = GetLocalIpAddress();
+                string ip = GetLocalIPAddress();
                 displayedApps.Add(new AppItem
                 {
-                    Name = "本机 IP 地址: " + ip + " 📋",
-                    DisplayPath = "按 Enter 立即复制内网 IP 到剪贴板",
-                    Category = "网络信息 📶",
+                    Name = "本机 IPv4 地址: " + ip,
+                    DisplayPath = "点击可直接复制 IP 到剪贴板",
+                    Category = "网络信息 🌐",
                     IsSystemCommand = true,
                     SystemCommandAction = () =>
                     {
                         Clipboard.SetText(ip);
-                        ShowTemporaryStatus("已复制 IP 到剪贴板: " + ip);
+                        ShowTemporaryStatus("已复制 IP: " + ip);
                     }
                 });
             }
 
-            // 3. Math Calculation
-            double mathRes;
-            string mathExpr;
-            if (TryEvaluateMath(query, out mathRes, out mathExpr))
+            // 3. Calculator / Math Expression
+            string mathRes = EvaluateMathExpression(query);
+            if (!string.IsNullOrEmpty(mathRes))
             {
-                string ansStr = mathRes.ToString("G15");
-                var mathApp = new AppItem
+                displayedApps.Add(new AppItem
                 {
-                    Name = string.Format("{0} = {1}", mathExpr, ansStr),
-                    DisplayPath = "⚡ 计算结果 · 按 Enter 复制结果到剪贴板",
-                    Category = "计算器",
+                    Name = query + " = " + mathRes,
+                    DisplayPath = "回车将计算结果 [" + mathRes + "] 复制到剪贴板",
+                    Category = "计算器 🧮",
                     IsMathResult = true,
-                    MathAnswer = ansStr
-                };
-                displayedApps.Add(mathApp);
+                    MathAnswer = mathRes
+                });
             }
 
-            // 4. Search by Name / Pinyin / Path
-            var matches = allIndexedApps.Where(a =>
-                a.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                (!string.IsNullOrEmpty(a.PinyinInitials) && a.PinyinInitials.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) ||
-                a.DisplayPath.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0
-            ).OrderBy(a =>
-            {
-                if (a.Name.Equals(query, StringComparison.OrdinalIgnoreCase)) return 0;
-                if (a.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase)) return 1;
-                if (!string.IsNullOrEmpty(a.PinyinInitials) && a.PinyinInitials.StartsWith(query, StringComparison.OrdinalIgnoreCase)) return 2;
-                return 3;
-            }).Take(15).ToList();
+            // 4. Fuzzy App Search (Exact, Pinyin, Substring)
+            string qPinyin = query.ToLowerInvariant();
+            var matched = new List<Tuple<int, AppItem>>();
 
-            foreach (var app in matches)
+            foreach (var app in allIndexedApps)
             {
-                displayedApps.Add(app);
-            }
+                string name = app.Name ?? "";
+                string pinyin = app.PinyinInitials ?? "";
+                int score = 0;
 
-            // 5. Fallback direct run / browser search
-            if (displayedApps.Count == 0 && !string.IsNullOrEmpty(query))
-            {
-                var directApp = new AppItem
+                if (name.Equals(query, StringComparison.OrdinalIgnoreCase))
                 {
-                    Name = "搜索或运行: " + query,
-                    TargetPath = query,
-                    DisplayPath = query,
-                    Category = "快速启动"
-                };
-                displayedApps.Add(directApp);
+                    score = 1000;
+                }
+                else if (name.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+                {
+                    score = 800;
+                }
+                else if (!string.IsNullOrEmpty(pinyin) && pinyin.StartsWith(qPinyin, StringComparison.OrdinalIgnoreCase))
+                {
+                    score = 600;
+                }
+                else if (name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    score = 400;
+                }
+                else if (!string.IsNullOrEmpty(pinyin) && pinyin.IndexOf(qPinyin, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    score = 300;
+                }
+                else if ((app.DisplayPath ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    score = 100;
+                }
+
+                if (score > 0)
+                {
+                    if (app.IsCustom) score += 50;
+                    matched.Add(new Tuple<int, AppItem>(score, app));
+                }
             }
 
-            RenderResultCards();
+            foreach (var item in matched.OrderByDescending(t => t.Item1).Select(t => t.Item2))
+            {
+                if (!displayedApps.Contains(item))
+                {
+                    displayedApps.Add(item);
+                }
+            }
+
+            // Render Search Results
+            RenderSearchResults();
         }
 
-        private void RenderResultCards()
+        private void RenderSearchResults()
         {
             resultsContainer.Children.Clear();
+
+            if (displayedApps.Count == 0)
+            {
+                var emptyNotice = new Border
+                {
+                    Padding = new Thickness(0, 30, 0, 30),
+                    HorizontalAlignment = HorizontalAlignment.Center
+                };
+                var emptyStack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
+                emptyStack.Children.Add(new TextBlock
+                {
+                    Text = "🔍 未检索到匹配资源",
+                    FontSize = 13.5,
+                    FontWeight = FontWeights.Medium,
+                    Foreground = new SolidColorBrush(ColorTextSecondary),
+                    HorizontalAlignment = HorizontalAlignment.Center
+                });
+                emptyStack.Children.Add(new TextBlock
+                {
+                    Text = "可尝试输入前缀: s-必应搜索、g-谷歌搜索、git-GitHub、b-百度",
+                    FontSize = 11.5,
+                    Foreground = new SolidColorBrush(ColorTextMuted),
+                    Margin = new Thickness(0, 6, 0, 0),
+                    HorizontalAlignment = HorizontalAlignment.Center
+                });
+                emptyNotice.Child = emptyStack;
+                resultsContainer.Children.Add(emptyNotice);
+                return;
+            }
 
             for (int i = 0; i < displayedApps.Count; i++)
             {
                 var app = displayedApps[i];
                 bool isSelected = (i == selectedResultIndex);
-                var card = CreateResultCard(app, isSelected, i);
-                resultsContainer.Children.Add(card);
+                var row = CreateSearchResultItem(app, isSelected, i);
+                resultsContainer.Children.Add(row);
             }
         }
 
-        private UIElement CreateResultCard(AppItem app, bool isSelected, int index)
+        private UIElement CreateSearchResultItem(AppItem app, bool isSelected, int index)
         {
             var border = new Border
             {
@@ -1755,24 +1802,21 @@ namespace FloatingLauncher
                 Margin = new Thickness(0, 2, 0, 2),
                 Padding = new Thickness(12, 8, 12, 8),
                 Background = isSelected
-                    ? new SolidColorBrush(Color.FromArgb(28, 90, 122, 170))
-                    : new SolidColorBrush(ColorBgSubtle),
+                    ? new SolidColorBrush(ColorTileHover)
+                    : Brushes.Transparent,
                 BorderBrush = isSelected
                     ? new SolidColorBrush(ColorMorandiBlue)
-                    : new SolidColorBrush(ColorBorderSubtle),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                FocusVisualStyle = null
+                    : Brushes.Transparent,
+                BorderThickness = new Thickness(isSelected ? 1 : 0),
+                Cursor = Cursors.Hand
             };
 
             var grid = new Grid();
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // Left Indicator + Icon
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // Name + Path
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // Category + Action
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            // 1. Icon + Left Indicator (ALWAYS 11px width so rows never shift horizontally)
             var leftStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            
+
             var activeBar = new Border
             {
                 Width = 3,
@@ -1784,60 +1828,58 @@ namespace FloatingLauncher
             };
             leftStack.Children.Add(activeBar);
 
+            var iconImg = new System.Windows.Controls.Image
+            {
+                Width = 20,
+                Height = 20,
+                Source = app.IconSource ?? GetStockIcon(),
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            RenderOptions.SetBitmapScalingMode(iconImg, BitmapScalingMode.HighQuality);
+
             var iconBox = new Border
             {
-                Width = 32,
-                Height = 32,
+                Width = 28,
+                Height = 28,
                 CornerRadius = new CornerRadius(6),
                 Background = Brushes.White,
                 BorderBrush = new SolidColorBrush(ColorBorderSubtle),
                 BorderThickness = new Thickness(1),
                 Margin = new Thickness(0, 0, 10, 0),
                 VerticalAlignment = VerticalAlignment.Center,
-                Child = new System.Windows.Controls.Image
-                {
-                    Width = 20,
-                    Height = 20,
-                    Source = app.IconSource ?? GetStockIcon(),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    HorizontalAlignment = HorizontalAlignment.Center
-                }
+                Child = iconImg
             };
             leftStack.Children.Add(iconBox);
-            Grid.SetColumn(leftStack, 0);
-            grid.Children.Add(leftStack);
 
-            // 2. Text Info with Real-time Keyword Highlighting
             var textStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            var nameBlock = CreateHighlightedTextBlock(app.Name, currentSearchText, ColorTextPrimary, ColorMorandiBlue, 13.5, FontWeights.SemiBold);
-            
+            var nameBlock = new TextBlock
+            {
+                Text = app.Name,
+                FontSize = 13,
+                FontWeight = isSelected ? FontWeights.SemiBold : FontWeights.Normal,
+                Foreground = new SolidColorBrush(ColorTextPrimary)
+            };
             var pathBlock = new TextBlock
             {
-                Text = app.DisplayPath,
-                FontSize = 10.5,
+                Text = app.DisplayPath ?? "",
+                FontSize = 11,
                 Foreground = new SolidColorBrush(ColorTextMuted),
+                Margin = new Thickness(0, 2, 0, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis,
-                MaxWidth = 270
+                MaxWidth = 360
             };
             textStack.Children.Add(nameBlock);
             textStack.Children.Add(pathBlock);
-            Grid.SetColumn(textStack, 1);
-            grid.Children.Add(textStack);
+            leftStack.Children.Add(textStack);
 
-            // 3. Right Tag & Launch Button (Pixel-perfect fixed dimensions across all rows)
-            var actionStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            
-            Color catColor = ColorMorandiBlue;
-            if (app.IsMathResult) catColor = ColorMorandiGreen;
-            else if (app.IsWebSearch) catColor = ColorMorandiAmber;
-            else if (app.IsSystemCommand) catColor = ColorMorandiCoral;
-            else if (app.IsDirectory) catColor = ColorMorandiAmber;
+            Grid.SetColumn(leftStack, 0);
+            grid.Children.Add(leftStack);
 
-            var categoryBadge = new Border
+            var tagPill = new Border
             {
-                Width = 68,
-                Height = 24,
                 CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(6, 2, 6, 2),
                 Background = new SolidColorBrush(ColorBgSearch),
                 BorderBrush = new SolidColorBrush(ColorBorderSubtle),
                 BorderThickness = new Thickness(1),
@@ -1845,187 +1887,70 @@ namespace FloatingLauncher
                 Child = new TextBlock
                 {
                     Text = app.Category ?? "应用",
-                    FontSize = 10.5,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Foreground = new SolidColorBrush(catColor)
+                    FontSize = 10,
+                    Foreground = new SolidColorBrush(ColorTextSecondary)
                 }
             };
-
-            string btnText = "启动 ➔";
-            if (app.IsMathResult) btnText = "复制 📋";
-            else if (app.IsWebSearch) btnText = "直达 ➔";
-            else if (app.IsSystemCommand) btnText = "执行 ➔";
-            else if (app.IsDirectory) btnText = "打开 ➔";
-
-            var launchBtn = new Button
-            {
-                Content = btnText,
-                FontSize = 11,
-                FontWeight = FontWeights.Medium,
-                Width = 68,
-                Height = 24,
-                Background = isSelected
-                    ? new SolidColorBrush(catColor)
-                    : new SolidColorBrush(ColorBgSearch),
-                Foreground = isSelected
-                    ? Brushes.White
-                    : new SolidColorBrush(ColorTextSecondary),
-                BorderBrush = new SolidColorBrush(isSelected ? catColor : ColorBorderSubtle),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                FocusVisualStyle = null
-            };
-            var template = new ControlTemplate(typeof(Button));
-            var bFact = new FrameworkElementFactory(typeof(Border));
-            bFact.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
-            bFact.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Button.BackgroundProperty));
-            bFact.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(Button.BorderBrushProperty));
-            var cpFact = new FrameworkElementFactory(typeof(ContentPresenter));
-            cpFact.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-            cpFact.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
-            bFact.AppendChild(cpFact);
-            template.VisualTree = bFact;
-            launchBtn.Template = template;
-
-            launchBtn.Click += (s, e) =>
-            {
-                e.Handled = true;
-                LaunchApp(app);
-            };
-
-            actionStack.Children.Add(categoryBadge);
-            actionStack.Children.Add(launchBtn);
-            Grid.SetColumn(actionStack, 2);
-            grid.Children.Add(actionStack);
+            Grid.SetColumn(tagPill, 1);
+            grid.Children.Add(tagPill);
 
             border.Child = grid;
 
             border.MouseLeftButtonDown += (s, e) =>
             {
                 selectedResultIndex = index;
-                RenderResultCards();
-                if (e.ClickCount >= 2)
-                {
-                    LaunchApp(app);
-                }
+                LaunchApp(app);
             };
 
-            // Right-click context menu
-            if (!app.IsMathResult)
+            border.MouseEnter += (s, e) =>
             {
-                border.ContextMenu = CreateAppContextMenu(app);
-            }
+                selectedResultIndex = index;
+                RenderSearchResults();
+            };
 
             return border;
         }
 
-        private static TextBlock CreateHighlightedTextBlock(string fullText, string query, Color normalColor, Color highlightColor, double fontSize = 13.5, FontWeight? weight = null)
-        {
-            var tb = new TextBlock
-            {
-                FontSize = fontSize,
-                FontWeight = weight ?? FontWeights.Medium,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-
-            if (string.IsNullOrEmpty(query) || string.IsNullOrEmpty(fullText))
-            {
-                tb.Inlines.Add(new Run(fullText) { Foreground = new SolidColorBrush(normalColor) });
-                return tb;
-            }
-
-            int idx = fullText.IndexOf(query, StringComparison.OrdinalIgnoreCase);
-            if (idx < 0)
-            {
-                tb.Inlines.Add(new Run(fullText) { Foreground = new SolidColorBrush(normalColor) });
-                return tb;
-            }
-
-            if (idx > 0)
-            {
-                tb.Inlines.Add(new Run(fullText.Substring(0, idx)) { Foreground = new SolidColorBrush(normalColor) });
-            }
-
-            tb.Inlines.Add(new Run(fullText.Substring(idx, query.Length))
-            {
-                Foreground = new SolidColorBrush(highlightColor),
-                FontWeight = FontWeights.Bold
-            });
-
-            if (idx + query.Length < fullText.Length)
-            {
-                tb.Inlines.Add(new Run(fullText.Substring(idx + query.Length)) { Foreground = new SolidColorBrush(normalColor) });
-            }
-
-            return tb;
-        }
-
         private void SearchBox_KeyDown(object sender, KeyEventArgs e)
         {
-            // Ctrl + 1..8 Quick Launch
-            if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            if (e.Key == Key.Down)
             {
-                int num = -1;
-                if (e.Key >= Key.D1 && e.Key <= Key.D8) num = e.Key - Key.D1;
-                else if (e.Key >= Key.NumPad1 && e.Key <= Key.NumPad8) num = e.Key - Key.NumPad1;
-
-                if (num >= 0)
+                if (displayedApps.Count > 0)
                 {
-                    if (displayedApps.Count > num)
-                    {
-                        LaunchApp(displayedApps[num]);
-                        e.Handled = true;
-                        return;
-                    }
-                    else if (string.IsNullOrEmpty(searchBox.Text) && allIndexedApps.Count > num)
-                    {
-                        LaunchApp(allIndexedApps[num]);
-                        e.Handled = true;
-                        return;
-                    }
-                }
-            }
-
-            if (e.Key == Key.Enter)
-            {
-                if (displayedApps.Count > 0 && selectedResultIndex >= 0 && selectedResultIndex < displayedApps.Count)
-                {
-                    LaunchApp(displayedApps[selectedResultIndex]);
-                }
-                else if (!string.IsNullOrWhiteSpace(searchBox.Text))
-                {
-                    LaunchDirect(searchBox.Text.Trim());
-                }
-            }
-            else if (e.Key == Key.Down)
-            {
-                if (selectedResultIndex < displayedApps.Count - 1)
-                {
-                    selectedResultIndex++;
-                    RenderResultCards();
+                    selectedResultIndex = (selectedResultIndex + 1) % displayedApps.Count;
+                    RenderSearchResults();
+                    EnsureSelectedVisible();
                 }
                 e.Handled = true;
             }
             else if (e.Key == Key.Up)
             {
-                if (selectedResultIndex > 0)
+                if (displayedApps.Count > 0)
                 {
-                    selectedResultIndex--;
-                    RenderResultCards();
+                    selectedResultIndex = (selectedResultIndex - 1 + displayedApps.Count) % displayedApps.Count;
+                    RenderSearchResults();
+                    EnsureSelectedVisible();
                 }
                 e.Handled = true;
             }
-            else if (e.Key == Key.Escape)
+            else if (e.Key == Key.Enter)
             {
-                if (!string.IsNullOrEmpty(searchBox.Text))
+                if (displayedApps.Count > 0 && selectedResultIndex >= 0 && selectedResultIndex < displayedApps.Count)
                 {
-                    searchBox.Text = "";
+                    LaunchApp(displayedApps[selectedResultIndex]);
                 }
-                else
+                e.Handled = true;
+            }
+        }
+
+        private void EnsureSelectedVisible()
+        {
+            if (selectedResultIndex >= 0 && selectedResultIndex < resultsContainer.Children.Count)
+            {
+                var element = resultsContainer.Children[selectedResultIndex] as FrameworkElement;
+                if (element != null)
                 {
-                    Hide();
-                    TrimMemory();
+                    element.BringIntoView();
                 }
             }
         }
@@ -2034,262 +1959,109 @@ namespace FloatingLauncher
         {
             if (app == null) return;
 
-            // Handle Math Result
-            if (app.IsMathResult)
-            {
-                Clipboard.SetText(app.MathAnswer);
-                ShowTemporaryStatus("已复制计算结果: " + app.MathAnswer);
-                return;
-            }
-
-            // Handle System Command
-            if (app.IsSystemCommand && app.SystemCommandAction != null)
-            {
-                try
-                {
-                    app.SystemCommandAction();
-                }
-                catch (Exception ex)
-                {
-                    ShowTemporaryStatus("执行失败: " + ex.Message, isError: true);
-                }
-                return;
-            }
-
-            // Handle Web Search / URL Direct Navigation
-            if (app.IsWebSearch)
-            {
-                try
-                {
-                    Process.Start(new ProcessStartInfo(app.TargetPath) { UseShellExecute = true });
-                    ShowTemporaryStatus("正在打开: " + app.Name);
-                }
-                catch (Exception ex)
-                {
-                    ShowTemporaryStatus("打开失败: " + ex.Message, isError: true);
-                }
-                TrimMemory();
-                return;
-            }
-
-            // Handle Folder Navigation
-            if (app.IsDirectory)
-            {
-                try
-                {
-                    Process.Start(new ProcessStartInfo("explorer.exe", "\"" + app.TargetPath + "\"") { UseShellExecute = true });
-                    ShowTemporaryStatus("已打开文件夹: " + app.Name);
-                }
-                catch (Exception ex)
-                {
-                    ShowTemporaryStatus("打开文件夹失败: " + ex.Message, isError: true);
-                }
-                TrimMemory();
-                return;
-            }
-
             try
             {
-                string target = AutoHealTarget(app.TargetPath);
-                if (!string.IsNullOrEmpty(target))
+                if (app.IsSystemCommand && app.SystemCommandAction != null)
                 {
-                    bool isExplorerTarget = target.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase) || target.EndsWith(@"\explorer.exe", StringComparison.OrdinalIgnoreCase);
-                    if (File.Exists(target) || Directory.Exists(target) || isExplorerTarget)
-                    {
-                        var psi = new ProcessStartInfo
-                        {
-                            FileName = target,
-                            Arguments = app.Arguments ?? "",
-                            UseShellExecute = true
-                        };
-                        string workDir = app.WorkingDirectory;
-                        if (string.IsNullOrEmpty(workDir) || !Directory.Exists(workDir))
-                        {
-                            if (File.Exists(target)) workDir = System.IO.Path.GetDirectoryName(target);
-                        }
-                        if (!string.IsNullOrEmpty(workDir) && Directory.Exists(workDir))
-                        {
-                            psi.WorkingDirectory = workDir;
-                        }
-                        Process.Start(psi);
-                        ShowTemporaryStatus("启动成功: " + app.Name);
-                        TrimMemory();
-                        return;
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(app.OriginalLnkPath) && File.Exists(app.OriginalLnkPath))
-                {
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = app.OriginalLnkPath,
-                        UseShellExecute = true
-                    };
-                    Process.Start(psi);
-                    ShowTemporaryStatus("启动成功: " + app.Name);
+                    app.SystemCommandAction.Invoke();
+                    Hide();
                     TrimMemory();
                     return;
                 }
 
-                LaunchDirect(app.TargetPath ?? app.DisplayPath, app.Arguments);
-            }
-            catch (System.ComponentModel.Win32Exception winEx)
-            {
-                if (winEx.NativeErrorCode == 1223)
+                if (app.IsMathResult && !string.IsNullOrEmpty(app.MathAnswer))
                 {
-                    ShowTemporaryStatus("已取消启动: " + app.Name, isWarning: true);
+                    Clipboard.SetText(app.MathAnswer);
+                    ShowTemporaryStatus("已复制计算结果: " + app.MathAnswer);
+                    return;
                 }
-                else
-                {
-                    ShowTemporaryStatus("启动失败: " + winEx.Message, isError: true);
-                }
-            }
-            catch (Exception ex)
-            {
-                ShowTemporaryStatus("启动失败: " + ex.Message, isError: true);
-            }
-            TrimMemory();
-        }
 
-        private void LaunchDirect(string target, string args = "")
-        {
-            try
-            {
-                var psi = new ProcessStartInfo
+                if (app.IsWebSearch || !string.IsNullOrEmpty(app.TargetPath) && (app.TargetPath.StartsWith("http://") || app.TargetPath.StartsWith("https://")))
                 {
-                    FileName = target,
-                    Arguments = args ?? "",
-                    UseShellExecute = true
-                };
-                Process.Start(psi);
-                ShowTemporaryStatus("执行成功: " + target);
-            }
-            catch (Exception ex)
-            {
-                ShowTemporaryStatus("启动失败: " + ex.Message, isError: true);
-            }
-            TrimMemory();
-        }
-
-        private void LaunchAppAdmin(AppItem app)
-        {
-            try
-            {
-                string target = AutoHealTarget(app.TargetPath);
-                string fileToRun = (!string.IsNullOrEmpty(target) && File.Exists(target)) ? target : app.OriginalLnkPath;
-                if (!string.IsNullOrEmpty(fileToRun) && File.Exists(fileToRun))
-                {
-                    var psi = new ProcessStartInfo
+                    Process.Start(new ProcessStartInfo
                     {
-                        FileName = fileToRun,
-                        Arguments = app.Arguments ?? "",
-                        Verb = "runas",
+                        FileName = app.TargetPath,
                         UseShellExecute = true
-                    };
-                    string workDir = app.WorkingDirectory;
-                    if (string.IsNullOrEmpty(workDir) || !Directory.Exists(workDir))
-                    {
-                        if (File.Exists(fileToRun)) workDir = System.IO.Path.GetDirectoryName(fileToRun);
-                    }
-                    if (!string.IsNullOrEmpty(workDir) && Directory.Exists(workDir))
-                    {
-                        psi.WorkingDirectory = workDir;
-                    }
-                    Process.Start(psi);
-                    ShowTemporaryStatus("以管理员权限启动: " + app.Name);
+                    });
+                    Hide();
+                    TrimMemory();
+                    return;
                 }
-            }
-            catch (System.ComponentModel.Win32Exception winEx)
-            {
-                if (winEx.NativeErrorCode == 1223)
+
+                string target = app.TargetPath;
+                if (string.IsNullOrEmpty(target)) target = app.OriginalLnkPath;
+                if (string.IsNullOrEmpty(target)) target = app.DisplayPath;
+
+                var psi = new ProcessStartInfo();
+                psi.FileName = target;
+                if (!string.IsNullOrEmpty(app.Arguments)) psi.Arguments = app.Arguments;
+                if (!string.IsNullOrEmpty(app.WorkingDirectory) && Directory.Exists(app.WorkingDirectory))
                 {
-                    ShowTemporaryStatus("已取消提权启动", isWarning: true);
+                    psi.WorkingDirectory = app.WorkingDirectory;
                 }
-                else
-                {
-                    ShowTemporaryStatus("管理员启动失败: " + winEx.Message, isError: true);
-                }
+                psi.UseShellExecute = true;
+
+                Process.Start(psi);
+                Hide();
+                TrimMemory();
             }
             catch (Exception ex)
             {
-                ShowTemporaryStatus("管理员启动失败: " + ex.Message, isError: true);
-            }
-            TrimMemory();
-        }
-
-        private void OpenContainingFolder(AppItem app)
-        {
-            try
-            {
-                string p = app.TargetPath;
-                if (string.IsNullOrEmpty(p) || !File.Exists(p))
-                {
-                    p = app.OriginalLnkPath;
-                }
-                if (!string.IsNullOrEmpty(p) && File.Exists(p))
-                {
-                    Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + p + "\"") { UseShellExecute = true });
-                    ShowTemporaryStatus("已打开所在目录");
-                    return;
-                }
-                if (!string.IsNullOrEmpty(p) && Directory.Exists(p))
-                {
-                    Process.Start(new ProcessStartInfo("explorer.exe", "\"" + p + "\"") { UseShellExecute = true });
-                    ShowTemporaryStatus("已打开文件夹");
-                    return;
-                }
-                ShowTemporaryStatus("未找到该应用所在文件路径", isWarning: true);
-            }
-            catch (Exception ex)
-            {
-                ShowTemporaryStatus("打开目录失败: " + ex.Message, isError: true);
+                ShowTemporaryStatus("启动失败: " + ex.Message);
             }
         }
 
-        private void ShowTemporaryStatus(string message, bool isError = false, bool isWarning = false)
+        private void ShowTemporaryStatus(string msg)
         {
-            statusText.Text = message;
-            if (isError) statusText.Foreground = new SolidColorBrush(ColorMorandiCoral);
-            else if (isWarning) statusText.Foreground = new SolidColorBrush(ColorMorandiAmber);
-            else statusText.Foreground = new SolidColorBrush(ColorMorandiGreen);
-
+            statusText.Text = msg;
             var timer = new System.Windows.Threading.DispatcherTimer
             {
                 Interval = TimeSpan.FromSeconds(3)
             };
             timer.Tick += (s, e) =>
             {
-                statusText.Text = "就绪 · s-必应，g-谷歌，git-GitHub，回车启动";
-                statusText.Foreground = new SolidColorBrush(ColorTextSecondary);
+                statusText.Text = "就绪 · 支持 s-必应、g-谷歌、git-GitHub、b-百度、bz-B站 及快捷指令";
                 timer.Stop();
             };
             timer.Start();
         }
 
-        public static string GetPinyinInitials(string chinese)
+        private void TrimMemory()
         {
-            if (string.IsNullOrEmpty(chinese)) return "";
+            try
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                EmptyWorkingSet(Process.GetCurrentProcess().Handle);
+            }
+            catch { }
+        }
+
+        // Pinyin initials conversion for lightning Chinese search
+        public static string GetPinyinInitials(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
             var sb = new StringBuilder();
-            foreach (char c in chinese)
+            foreach (char c in text)
             {
                 if (c >= 'a' && c <= 'z') sb.Append(c);
                 else if (c >= 'A' && c <= 'Z') sb.Append(char.ToLowerInvariant(c));
                 else if (c >= '0' && c <= '9') sb.Append(c);
                 else
                 {
-                    char pinyin = GetSinglePinyinInitial(c);
-                    if (pinyin != '\0') sb.Append(pinyin);
+                    char py = GetChinesePinyinChar(c);
+                    if (py != '\0') sb.Append(py);
                 }
             }
             return sb.ToString();
         }
 
-        private static char GetSinglePinyinInitial(char c)
+        private static char GetChinesePinyinChar(char c)
         {
-            byte[] arr = Encoding.GetEncoding("GB2312").GetBytes(new char[] { c });
+            byte[] arr = Encoding.Default.GetBytes(c.ToString());
             if (arr.Length < 2) return '\0';
 
-            int code = arr[0] * 256 + arr[1] - 65536;
+            int code = (short)(arr[0] << 8 | arr[1]);
 
             if (code >= -20319 && code <= -20284) return 'a';
             if (code >= -20283 && code <= -19776) return 'b';
@@ -2318,32 +2090,159 @@ namespace FloatingLauncher
             return '\0';
         }
 
-        public static ImageSource GetFileIcon(string path)
+        // High-Quality Vector Tile Icon Generator (Eliminates Broken / Blank Icons)
+        public static ImageSource GetNamedBadgeIcon(string name, Color? customBg = null)
         {
-            if (string.IsNullOrEmpty(path)) return GetStockIcon();
+            if (string.IsNullOrEmpty(name)) name = "应用";
+            try
+            {
+                var bmp = new RenderTargetBitmap(32, 32, 96, 96, PixelFormats.Pbgra32);
+                var dv = new DrawingVisual();
+                using (var dc = dv.RenderOpen())
+                {
+                    Color bg = customBg.HasValue ? customBg.Value : GetBrandOrHashColor(name);
+                    var brush = new SolidColorBrush(bg);
+                    dc.DrawRoundedRectangle(brush, null, new Rect(1, 1, 30, 30), 6, 6);
+
+                    string badgeText = GetBadgeGlyph(name);
+                    var typeface = new Typeface(new FontFamily("Segoe UI, Microsoft YaHei, Arial"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+                    double fontSize = badgeText.Length > 2 ? 10 : (badgeText.Length == 2 ? 11.5 : 13.5);
+                    var ft = new FormattedText(
+                        badgeText,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        FlowDirection.LeftToRight,
+                        typeface,
+                        fontSize,
+                        Brushes.White);
+
+                    double x = Math.Max(0, (32 - ft.Width) / 2.0);
+                    double y = Math.Max(0, (32 - ft.Height) / 2.0);
+                    dc.DrawText(ft, new Point(x, y));
+                }
+                bmp.Render(dv);
+                bmp.Freeze();
+                return bmp;
+            }
+            catch
+            {
+                return GetStockIcon();
+            }
+        }
+
+        private static string GetBadgeGlyph(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "A";
+            string lower = name.ToLowerInvariant();
+            if (lower.Contains("腾讯会议") || lower.Contains("wemeet")) return "会";
+            if (lower.Contains("chatgpt") || lower.Contains("codex")) return "GPT";
+            if (lower.Contains("gmail") || lower.Contains("mail") || lower.Contains("邮箱")) return "M";
+            if (lower.Contains("telegram")) return "TG";
+            if (lower.Contains("bilibili") || lower.Contains("b站")) return "B";
+            if (lower.Contains("wechat") || lower.Contains("微信")) return "微";
+            if (lower.Contains("wps")) return "W";
+            if (lower.Contains("vscode") || lower.Contains("visual studio")) return "VS";
+
+            char first = name.Trim()[0];
+            if (first >= 0x4e00 && first <= 0x9fff)
+            {
+                return first.ToString();
+            }
+
+            string trimmed = name.Trim();
+            if (trimmed.Length >= 2 && char.IsLetter(trimmed[0]) && char.IsLetter(trimmed[1]))
+            {
+                return trimmed.Substring(0, 2).ToUpperInvariant();
+            }
+            return trimmed.Substring(0, 1).ToUpperInvariant();
+        }
+
+        private static Color GetBrandOrHashColor(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return ColorMorandiBlue;
+            string lower = name.ToLowerInvariant();
+            if (lower.Contains("腾讯会议") || lower.Contains("wemeet")) return Color.FromRgb(0, 82, 217); // Tencent Blue
+            if (lower.Contains("chatgpt") || lower.Contains("codex")) return Color.FromRgb(16, 163, 127); // OpenAI Teal
+            if (lower.Contains("gmail") || lower.Contains("mail") || lower.Contains("邮箱")) return Color.FromRgb(234, 67, 53); // Google Red
+            if (lower.Contains("telegram")) return Color.FromRgb(34, 158, 217); // Telegram Blue
+            if (lower.Contains("bilibili") || lower.Contains("b站")) return Color.FromRgb(251, 114, 153); // Bilibili Pink
+            if (lower.Contains("wechat") || lower.Contains("微信")) return Color.FromRgb(7, 193, 96); // WeChat Green
+            if (lower.Contains("wps")) return Color.FromRgb(234, 64, 37); // WPS Red
+            if (lower.Contains("vscode") || lower.Contains("visual studio")) return Color.FromRgb(0, 122, 204); // VS Code Blue
+
+            Color[] palette = new Color[]
+            {
+                Color.FromRgb(59, 130, 246),
+                Color.FromRgb(16, 185, 129),
+                Color.FromRgb(139, 92, 246),
+                Color.FromRgb(245, 158, 11),
+                Color.FromRgb(6, 182, 212),
+                Color.FromRgb(236, 72, 153),
+                Color.FromRgb(99, 102, 241),
+                Color.FromRgb(100, 116, 139)
+            };
+            int hash = Math.Abs(name.GetHashCode());
+            return palette[hash % palette.Length];
+        }
+
+        public static ImageSource GetFileIcon(string path, string appName = null)
+        {
+            if (string.IsNullOrEmpty(path)) return GetNamedBadgeIcon(appName ?? "应用");
 
             try
             {
-                if (File.Exists(path))
-                {
-                    using (var sysIcon = System.Drawing.Icon.ExtractAssociatedIcon(path))
-                    {
-                        if (sysIcon != null)
-                        {
-                            return Imaging.CreateBitmapSourceFromHIcon(
-                                sysIcon.Handle,
-                                Int32Rect.Empty,
-                                BitmapSizeOptions.FromEmptyOptions());
-                        }
-                    }
-                }
-                else if (Directory.Exists(path))
+                if (Directory.Exists(path))
                 {
                     return GetFolderIcon();
                 }
+
+                if (File.Exists(path))
+                {
+                    if (path.EndsWith(".url", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return GetWebIcon(appName);
+                    }
+
+                    // If shortcut (.lnk), try extracting directly from target .exe to avoid shortcut arrow overlay
+                    string target = path;
+                    if (path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                            if (shellType != null)
+                            {
+                                dynamic shell = Activator.CreateInstance(shellType);
+                                dynamic sc = shell.CreateShortcut(path);
+                                string scTarget = sc.TargetPath;
+                                if (!string.IsNullOrEmpty(scTarget) && (File.Exists(scTarget) || Directory.Exists(scTarget)))
+                                {
+                                    target = scTarget;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (Directory.Exists(target)) return GetFolderIcon();
+
+                    if (File.Exists(target))
+                    {
+                        using (var sysIcon = System.Drawing.Icon.ExtractAssociatedIcon(target))
+                        {
+                            if (sysIcon != null)
+                            {
+                                return Imaging.CreateBitmapSourceFromHIcon(
+                                    sysIcon.Handle,
+                                    Int32Rect.Empty,
+                                    BitmapSizeOptions.FromEmptyOptions());
+                            }
+                        }
+                    }
+                }
             }
             catch { }
-            return GetStockIcon();
+
+            return GetNamedBadgeIcon(appName ?? (!string.IsNullOrEmpty(path) ? System.IO.Path.GetFileNameWithoutExtension(path) : "应用"));
         }
 
         private static ImageSource _folderIcon;
@@ -2356,8 +2255,12 @@ namespace FloatingLauncher
                 var dv = new DrawingVisual();
                 using (var dc = dv.RenderOpen())
                 {
-                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(220, 160, 40)), null, new Rect(2, 6, 12, 6), 2, 2);
-                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(240, 185, 55)), null, new Rect(2, 9, 28, 19), 4, 4);
+                    // Folder Tab
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(220, 155, 35)), null, new Rect(3, 5, 11, 6), 2, 2);
+                    // Folder Body
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(248, 188, 50)), null, new Rect(3, 8, 26, 19), 3, 3);
+                    // Folder Front Lip
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(255, 205, 75)), null, new Rect(3, 11, 26, 16), 3, 3);
                 }
                 bmp.Render(dv);
                 bmp.Freeze();
@@ -2368,8 +2271,12 @@ namespace FloatingLauncher
         }
 
         private static ImageSource _webIcon;
-        public static ImageSource GetWebIcon()
+        public static ImageSource GetWebIcon(string name = null)
         {
+            if (!string.IsNullOrEmpty(name))
+            {
+                return GetNamedBadgeIcon(name, Color.FromRgb(92, 107, 192));
+            }
             if (_webIcon != null) return _webIcon;
             try
             {
@@ -2377,7 +2284,10 @@ namespace FloatingLauncher
                 var dv = new DrawingVisual();
                 using (var dc = dv.RenderOpen())
                 {
-                    dc.DrawRoundedRectangle(new SolidColorBrush(ColorMorandiAmber), null, new Rect(2, 2, 28, 28), 6, 6);
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(92, 107, 192)), null, new Rect(1, 1, 30, 30), 6, 6);
+                    var typeface = new Typeface(new FontFamily("Segoe UI, Microsoft YaHei, Arial"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+                    var ft = new FormattedText("🌐", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 14, Brushes.White);
+                    dc.DrawText(ft, new Point(7, 6));
                 }
                 bmp.Render(dv);
                 bmp.Freeze();
@@ -2397,12 +2307,38 @@ namespace FloatingLauncher
                 var dv = new DrawingVisual();
                 using (var dc = dv.RenderOpen())
                 {
-                    dc.DrawRoundedRectangle(new SolidColorBrush(ColorMorandiCoral), null, new Rect(2, 2, 28, 28), 6, 6);
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(220, 80, 80)), null, new Rect(1, 1, 30, 30), 6, 6);
+                    var typeface = new Typeface(new FontFamily("Segoe UI, Microsoft YaHei, Arial"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+                    var ft = new FormattedText("⚙", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 15, Brushes.White);
+                    dc.DrawText(ft, new Point(8, 5));
                 }
                 bmp.Render(dv);
                 bmp.Freeze();
                 _systemIcon = bmp;
                 return _systemIcon;
+            }
+            catch { return GetStockIcon(); }
+        }
+
+        private static ImageSource _mathIcon;
+        public static ImageSource GetMathIcon()
+        {
+            if (_mathIcon != null) return _mathIcon;
+            try
+            {
+                var bmp = new RenderTargetBitmap(32, 32, 96, 96, PixelFormats.Pbgra32);
+                var dv = new DrawingVisual();
+                using (var dc = dv.RenderOpen())
+                {
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(46, 160, 85)), null, new Rect(1, 1, 30, 30), 6, 6);
+                    var typeface = new Typeface(new FontFamily("Segoe UI, Microsoft YaHei, Arial"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+                    var ft = new FormattedText("=", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 18, Brushes.White);
+                    dc.DrawText(ft, new Point(10, 3));
+                }
+                bmp.Render(dv);
+                bmp.Freeze();
+                _mathIcon = bmp;
+                return _mathIcon;
             }
             catch { return GetStockIcon(); }
         }
@@ -2417,32 +2353,15 @@ namespace FloatingLauncher
                 var dv = new DrawingVisual();
                 using (var dc = dv.RenderOpen())
                 {
-                    dc.DrawRoundedRectangle(new SolidColorBrush(ColorMorandiBlue), null, new Rect(2, 2, 28, 28), 6, 6);
+                    dc.DrawRoundedRectangle(new SolidColorBrush(ColorMorandiBlue), null, new Rect(1, 1, 30, 30), 6, 6);
+                    var typeface = new Typeface(new FontFamily("Segoe UI, Microsoft YaHei, Arial"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+                    var ft = new FormattedText("✦", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, 14, Brushes.White);
+                    dc.DrawText(ft, new Point(9, 6));
                 }
                 bmp.Render(dv);
                 bmp.Freeze();
                 _stockIcon = bmp;
                 return _stockIcon;
-            }
-            catch { return null; }
-        }
-
-        private static ImageSource _mathIcon;
-        public static ImageSource GetMathIcon()
-        {
-            if (_mathIcon != null) return _mathIcon;
-            try
-            {
-                var bmp = new RenderTargetBitmap(32, 32, 96, 96, PixelFormats.Pbgra32);
-                var dv = new DrawingVisual();
-                using (var dc = dv.RenderOpen())
-                {
-                    dc.DrawRoundedRectangle(new SolidColorBrush(ColorMorandiGreen), null, new Rect(2, 2, 28, 28), 6, 6);
-                }
-                bmp.Render(dv);
-                bmp.Freeze();
-                _mathIcon = bmp;
-                return _mathIcon;
             }
             catch { return null; }
         }
@@ -2484,8 +2403,11 @@ namespace FloatingLauncher
             try
             {
                 var app = new Application();
-                app.ShutdownMode = ShutdownMode.OnMainWindowClose;
-                app.Run(new MainWindow());
+                app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                var mainWindow = new MainWindow();
+                app.MainWindow = mainWindow;
+                mainWindow.ShowLauncher();
+                app.Run();
             }
             catch (Exception ex)
             {
