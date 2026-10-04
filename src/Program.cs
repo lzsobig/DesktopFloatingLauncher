@@ -1123,12 +1123,12 @@ namespace FloatingLauncher
                 ShowTemporaryStatus("💡 提示：直接将任意软件、快捷方式或文件夹拖入窗口即可添加！");
             });
 
-            var refreshBtn = CreateMinimalHeaderBtn("🔄", "重新扫描系统与桌面应用", (s, e) =>
+            var refreshBtn = CreateMinimalHeaderBtn("🔄", "重新扫描系统与桌面应用 (自动清理失效死链)", (s, e) =>
             {
                 LoadIndexedApps();
                 UpdateQuickDock();
                 FilterResults(searchBox.Text);
-                ShowTemporaryStatus("已刷新！共收录 " + allIndexedApps.Count + " 项");
+                ShowTemporaryStatus(string.Format("✅ 索引已刷新！已实机验证 {0} 项有效资源（死链已自动清理）", allIndexedApps.Count));
             });
 
             var closeBtn = CreateMinimalHeaderBtn("✕", "隐藏窗口 (Esc 最小化，后台常驻)", (s, e) =>
@@ -1491,17 +1491,26 @@ namespace FloatingLauncher
         {
             quickDockGrid.Children.Clear();
 
-            var candidateKeywords = new string[] { "腾讯会议", "Visual Studio Code", "VS Code", "ChatGPT", "微信", "Chrome", "Edge", "计算器", "记事本", "终端" };
+            var candidateKeywords = new string[] { "Visual Studio Code", "VS Code", "ChatGPT", "微信", "Chrome", "Edge", "网盘", "记事本", "终端", "Telegram" };
             var selectedApps = new List<AppItem>();
 
-            foreach (var custom in config.CustomApps.Take(4))
+            // 1. Only add valid custom apps
+            foreach (var custom in config.CustomApps)
             {
-                selectedApps.Add(custom);
+                string p = custom.TargetPath ?? custom.OriginalLnkPath ?? custom.DisplayPath;
+                if (IsAppTargetValid(p, custom.OriginalLnkPath))
+                {
+                    selectedApps.Add(custom);
+                }
+                if (selectedApps.Count >= 4) break;
             }
 
+            // 2. Candidate keywords (must exist on disk!)
             foreach (var kw in candidateKeywords)
             {
-                var match = allIndexedApps.FirstOrDefault(a => a.Name.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0);
+                var match = allIndexedApps.FirstOrDefault(a => 
+                    a.Name.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    IsAppTargetValid(a.TargetPath, a.OriginalLnkPath));
                 if (match != null && !selectedApps.Contains(match))
                 {
                     selectedApps.Add(match);
@@ -1509,11 +1518,12 @@ namespace FloatingLauncher
                 if (selectedApps.Count >= 8) break;
             }
 
+            // 3. Fill up with any other real valid apps
             if (selectedApps.Count < 8)
             {
                 foreach (var app in allIndexedApps)
                 {
-                    if (!selectedApps.Contains(app))
+                    if (!selectedApps.Contains(app) && IsAppTargetValid(app.TargetPath, app.OriginalLnkPath))
                     {
                         selectedApps.Add(app);
                     }
@@ -1670,33 +1680,75 @@ namespace FloatingLauncher
             return menu;
         }
 
+                public static bool IsAppTargetValid(string target, string lnkPath = null)
+        {
+            if (string.IsNullOrEmpty(target) && string.IsNullOrEmpty(lnkPath)) return false;
+
+            // Web URLs are always valid
+            if (!string.IsNullOrEmpty(target) && (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || target.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            // Existing physical files or directories
+            if (!string.IsNullOrEmpty(target) && (File.Exists(target) || Directory.Exists(target)))
+            {
+                return true;
+            }
+
+            // Windows system built-in commands
+            if (!string.IsNullOrEmpty(target))
+            {
+                string t = target.Trim().ToLowerInvariant();
+                if (t.StartsWith("ms-settings:") || t == "calc" || t == "notepad" || t == "cmd" || t == "powershell" || t == "control")
+                {
+                    return true;
+                }
+            }
+
+            // If lnk file exists on disk, check if it points to a missing file
+            if (!string.IsNullOrEmpty(lnkPath) && File.Exists(lnkPath))
+            {
+                // If it pointed to a specific file with drive letter or .exe and that file doesn't exist, it is a dead shortcut!
+                if (!string.IsNullOrEmpty(target) && (target.IndexOf(':') > 0 || target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return false;
+                }
+            }
+
+            return false;
+        }
+
         private void LoadIndexedApps()
         {
             allIndexedApps.Clear();
 
-            // 1. Custom Apps
+            // 1. Validate & Purge Dead Custom Apps
+            var validCustom = new List<AppItem>();
+            int deadCustomCount = 0;
             foreach (var custom in config.CustomApps)
             {
-                custom.IsCustom = true;
-                if (string.IsNullOrEmpty(custom.PinyinInitials))
+                string target = custom.TargetPath ?? custom.OriginalLnkPath ?? custom.DisplayPath;
+                if (IsAppTargetValid(target, custom.OriginalLnkPath))
                 {
-                    custom.PinyinInitials = GetPinyinInitials(custom.Name);
+                    custom.IsCustom = true;
+                    if (string.IsNullOrEmpty(custom.PinyinInitials))
+                    {
+                        custom.PinyinInitials = GetPinyinInitials(custom.Name);
+                    }
+                    validCustom.Add(custom);
+                    allIndexedApps.Add(custom);
                 }
-                allIndexedApps.Add(custom);
+                else
+                {
+                    deadCustomCount++;
+                }
             }
 
-            // 2. Specific Known Software (if present)
-            string wemeetPath = @"D:\新建文件夹\WeMeet\WeMeetApp.exe";
-            if (File.Exists(wemeetPath) && !allIndexedApps.Any(a => (a.TargetPath ?? "").Equals(wemeetPath, StringComparison.OrdinalIgnoreCase)))
+            if (deadCustomCount > 0 || validCustom.Count != config.CustomApps.Count)
             {
-                allIndexedApps.Add(new AppItem
-                {
-                    Name = "腾讯会议",
-                    PinyinInitials = "txhy",
-                    TargetPath = wemeetPath,
-                    DisplayPath = wemeetPath,
-                    Category = "应用"
-                });
+                config.CustomApps = validCustom;
+                ConfigManager.SaveConfig(config);
             }
 
             // 3. User Desktop & Subfolders (.lnk & .url)
@@ -1986,6 +2038,21 @@ namespace FloatingLauncher
                     string workDir = shortcut.WorkingDirectory;
 
                     target = AutoHealTarget(target);
+
+                    // DEAD SHORTCUT FILTER:
+                    // If target is a file path and does not exist on disk, this is a dead/uninstalled shortcut -> DO NOT INDEX!
+                    if (!string.IsNullOrEmpty(target) && (target.IndexOf(':') > 0 || target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (!File.Exists(target) && !Directory.Exists(target))
+                        {
+                            return null; // Dead shortcut! Ignore completely!
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(target))
+                    {
+                        target = lnkPath;
+                    }
 
                     if (string.IsNullOrEmpty(workDir) && !string.IsNullOrEmpty(target) && File.Exists(target))
                     {
@@ -2533,6 +2600,31 @@ namespace FloatingLauncher
                 string target = app.TargetPath;
                 if (string.IsNullOrEmpty(target)) target = app.OriginalLnkPath;
                 if (string.IsNullOrEmpty(target)) target = app.DisplayPath;
+
+                // Validate local target exists
+                bool isWeb = !string.IsNullOrEmpty(target) && (target.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || target.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+                if (!app.IsWebSearch && !isWeb)
+                {
+                    if (!File.Exists(target) && !Directory.Exists(target))
+                    {
+                        // Check if original lnk exists
+                        if (!string.IsNullOrEmpty(app.OriginalLnkPath) && File.Exists(app.OriginalLnkPath))
+                        {
+                            target = app.OriginalLnkPath;
+                        }
+                        else
+                        {
+                            // Target genuinely does not exist! Auto-prune from config & index
+                            config.CustomApps.RemoveAll(c => c.Name == app.Name || c.TargetPath == app.TargetPath);
+                            ConfigManager.SaveConfig(config);
+                            allIndexedApps.RemoveAll(a => a.Name == app.Name || a.TargetPath == app.TargetPath);
+                            UpdateQuickDock();
+                            FilterResults(searchBox.Text);
+                            ShowTemporaryStatus("⚠️ 目标文件已被删除或不存在，已自动为您清理移除！");
+                            return;
+                        }
+                    }
+                }
 
                 var psi = new ProcessStartInfo();
                 psi.FileName = target;
