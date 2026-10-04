@@ -95,6 +95,7 @@ namespace FloatingLauncher
         public double WindowLeft { get; set; }
         public double WindowTop { get; set; }
         public bool IsTopmost { get; set; }
+        public string Hotkey { get; set; }
         public List<AppItem> CustomApps { get; set; }
 
         public AppConfig()
@@ -102,6 +103,7 @@ namespace FloatingLauncher
             WindowLeft = -1;
             WindowTop = -1;
             IsTopmost = true;
+            Hotkey = "Alt+Q"; // Default to Alt+Q to prevent conflict with Antigravity / Windows system keys
             CustomApps = new List<AppItem>();
         }
     }
@@ -144,6 +146,10 @@ namespace FloatingLauncher
                         {
                             bool b;
                             if (bool.TryParse(val, out b)) config.IsTopmost = b;
+                        }
+                        else if (key.Equals("Hotkey", StringComparison.OrdinalIgnoreCase))
+                        {
+                            config.Hotkey = val;
                         }
                         else if (key.Equals("CustomApp", StringComparison.OrdinalIgnoreCase))
                         {
@@ -207,6 +213,7 @@ namespace FloatingLauncher
                 sb.AppendLine("WindowLeft=" + config.WindowLeft);
                 sb.AppendLine("WindowTop=" + config.WindowTop);
                 sb.AppendLine("IsTopmost=" + config.IsTopmost);
+                sb.AppendLine("Hotkey=" + (config.Hotkey ?? "Alt+Q"));
 
                 foreach (var app in config.CustomApps)
                 {
@@ -245,7 +252,8 @@ namespace FloatingLauncher
         private const int HOTKEY_ID = 9000;
         private const uint MOD_ALT = 0x0001;
         private const uint MOD_CONTROL = 0x0002;
-        private const uint VK_SPACE = 0x20;
+        private const uint MOD_SHIFT = 0x0004;
+        private const uint MOD_WIN = 0x0008;
 
         // Quiet Luxury Crisp Solid Palette (Zero DWM Blur Fringe, Raycast Quality)
         private static readonly Color ColorBgWindow = Color.FromRgb(255, 255, 255);
@@ -277,6 +285,8 @@ namespace FloatingLauncher
         private TextBlock statusText;
         private TextBlock countBadge;
         private Button pinBtn;
+        private Border hotkeyPill;
+        private TextBlock hotkeyTextBlock;
 
         private AppConfig config;
         private IntPtr windowHandle;
@@ -311,13 +321,70 @@ namespace FloatingLauncher
                 source.AddHook(HwndHook);
             }
 
-            // Register Alt + Space (Fallback to Ctrl + Alt + Space if occupied)
-            if (!RegisterHotKey(windowHandle, HOTKEY_ID, MOD_ALT, VK_SPACE))
-            {
-                RegisterHotKey(windowHandle, HOTKEY_ID, MOD_ALT | MOD_CONTROL, VK_SPACE);
-            }
-
+            ApplyHotkey(config.Hotkey ?? "Alt+Q");
             InitTrayIcon();
+        }
+
+        public void ApplyHotkey(string keyStr)
+        {
+            try
+            {
+                if (windowHandle != IntPtr.Zero)
+                {
+                    UnregisterHotKey(windowHandle, HOTKEY_ID);
+                }
+
+                uint mod = MOD_ALT;
+                uint vk = 0x51; // Q
+                string display = "Alt + Q";
+
+                string hk = (keyStr ?? "Alt+Q").Trim();
+                if (hk.Equals("Alt+Q", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = MOD_ALT; vk = 0x51; display = "Alt + Q";
+                }
+                else if (hk.Equals("Alt+Space", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = MOD_ALT; vk = 0x20; display = "Alt + Space";
+                }
+                else if (hk.Equals("Tilde", StringComparison.OrdinalIgnoreCase) || hk == "~" || hk == "`")
+                {
+                    mod = 0; vk = 0xC0; display = "~ (波浪键)";
+                }
+                else if (hk.Equals("Ctrl+Space", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = MOD_CONTROL; vk = 0x20; display = "Ctrl + Space";
+                }
+                else if (hk.Equals("Alt+D", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = MOD_ALT; vk = 0x44; display = "Alt + D";
+                }
+                else if (hk.Equals("Alt+W", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = MOD_ALT; vk = 0x57; display = "Alt + W";
+                }
+
+                bool registered = RegisterHotKey(windowHandle, HOTKEY_ID, mod, vk);
+                if (!registered && mod != (MOD_ALT | MOD_CONTROL))
+                {
+                    // Fallback to Ctrl + Alt + Key
+                    RegisterHotKey(windowHandle, HOTKEY_ID, MOD_ALT | MOD_CONTROL, vk);
+                    display = "Ctrl + " + display;
+                }
+
+                config.Hotkey = hk;
+                ConfigManager.SaveConfig(config);
+
+                if (hotkeyTextBlock != null)
+                {
+                    hotkeyTextBlock.Text = display;
+                }
+                if (trayIcon != null)
+                {
+                    trayIcon.Text = "桌面极速悬浮启动器 (" + display + ")";
+                }
+            }
+            catch { }
         }
 
         protected override void OnClosed(EventArgs e)
@@ -374,7 +441,8 @@ namespace FloatingLauncher
             try
             {
                 trayIcon = new NotifyIcon();
-                trayIcon.Text = "桌面极速悬浮启动器 (Alt + Space)";
+                string hkDisplay = hotkeyTextBlock != null ? hotkeyTextBlock.Text : "Alt + Q";
+                trayIcon.Text = "桌面极速悬浮启动器 (" + hkDisplay + ")";
 
                 try
                 {
@@ -387,9 +455,16 @@ namespace FloatingLauncher
                 }
 
                 var menu = new ContextMenuStrip();
-                var showItem = new ToolStripMenuItem("🚀 呼出启动器 (Alt + Space)");
+                var showItem = new ToolStripMenuItem("🚀 呼出启动器 (" + hkDisplay + ")");
                 showItem.Font = new System.Drawing.Font(menu.Font, System.Drawing.FontStyle.Bold);
                 showItem.Click += (s, e) => ShowLauncher();
+
+                var hkMenu = new ToolStripMenuItem("⌨ 快捷键设置 (防冲突)");
+                AddTrayHkOption(hkMenu, "Alt + Q (推荐 · 零冲突)", "Alt+Q");
+                AddTrayHkOption(hkMenu, "~ (波浪键 · Esc下方单键)", "Tilde");
+                AddTrayHkOption(hkMenu, "Alt + Space (系统经典空格)", "Alt+Space");
+                AddTrayHkOption(hkMenu, "Ctrl + Space", "Ctrl+Space");
+                AddTrayHkOption(hkMenu, "Alt + D", "Alt+D");
 
                 var reloadItem = new ToolStripMenuItem("🔄 重新扫描资源");
                 reloadItem.Click += (s, e) =>
@@ -423,6 +498,7 @@ namespace FloatingLauncher
 
                 menu.Items.Add(showItem);
                 menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add(hkMenu);
                 menu.Items.Add(reloadItem);
                 menu.Items.Add(autoStartMenuItem);
                 menu.Items.Add(new ToolStripSeparator());
@@ -433,6 +509,23 @@ namespace FloatingLauncher
                 trayIcon.Visible = true;
             }
             catch { }
+        }
+
+        private void AddTrayHkOption(ToolStripMenuItem parent, string text, string code)
+        {
+            var item = new ToolStripMenuItem(text);
+            item.Checked = (config.Hotkey ?? "Alt+Q").Equals(code, StringComparison.OrdinalIgnoreCase);
+            item.Click += (s, e) =>
+            {
+                ApplyHotkey(code);
+                foreach (ToolStripMenuItem child in parent.DropDownItems)
+                {
+                    child.Checked = false;
+                }
+                item.Checked = true;
+                ShowTemporaryStatus("唤醒键已设为: " + item.Text);
+            };
+            parent.DropDownItems.Add(item);
         }
 
         private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -576,20 +669,27 @@ namespace FloatingLauncher
                 Foreground = new SolidColorBrush(ColorTextPrimary),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            var hotkeyPill = new Border
+
+            hotkeyTextBlock = new TextBlock
+            {
+                Text = "Alt + Q",
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(ColorTextSecondary)
+            };
+
+            hotkeyPill = new Border
             {
                 Background = new SolidColorBrush(ColorBgSearch),
                 CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(6, 2, 6, 2),
+                Padding = new Thickness(7, 2, 7, 2),
                 Margin = new Thickness(8, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock
-                {
-                    Text = "Alt + Space",
-                    FontSize = 10,
-                    Foreground = new SolidColorBrush(ColorTextMuted)
-                }
+                Cursor = Cursors.Hand,
+                ToolTip = "点击快速切换唤醒快捷键 (Alt+Q / ~ / Alt+Space)",
+                Child = hotkeyTextBlock
             };
+            hotkeyPill.MouseLeftButtonDown += (s, e) => ShowHotkeyPillMenu();
+
             headerLeft.Children.Add(titleBlock);
             headerLeft.Children.Add(hotkeyPill);
             headerGrid.Children.Add(headerLeft);
@@ -847,6 +947,35 @@ namespace FloatingLauncher
             {
                 ShowLauncher();
             };
+        }
+
+        private void ShowHotkeyPillMenu()
+        {
+            var menu = new System.Windows.Controls.ContextMenu();
+
+            AddWpfHkOption(menu, "Alt + Q (推荐 · 零冲突)", "Alt+Q");
+            AddWpfHkOption(menu, "~ (波浪键 · Esc下方单键)", "Tilde");
+            AddWpfHkOption(menu, "Alt + Space (系统经典空格)", "Alt+Space");
+            AddWpfHkOption(menu, "Ctrl + Space", "Ctrl+Space");
+            AddWpfHkOption(menu, "Alt + D", "Alt+D");
+
+            menu.PlacementTarget = hotkeyPill;
+            menu.IsOpen = true;
+        }
+
+        private void AddWpfHkOption(System.Windows.Controls.ContextMenu menu, string text, string code)
+        {
+            var item = new System.Windows.Controls.MenuItem
+            {
+                Header = text,
+                IsChecked = (config.Hotkey ?? "Alt+Q").Equals(code, StringComparison.OrdinalIgnoreCase)
+            };
+            item.Click += (s, e) =>
+            {
+                ApplyHotkey(code);
+                ShowTemporaryStatus("唤醒快捷键已设为: " + text);
+            };
+            menu.Items.Add(item);
         }
 
         private Button CreateMinimalHeaderBtn(string content, string toolTip, RoutedEventHandler onClick)
@@ -2202,7 +2331,7 @@ namespace FloatingLauncher
                         return GetWebIcon(appName);
                     }
 
-                    // If shortcut (.lnk), try extracting directly from target .exe to avoid shortcut arrow overlay
+                    // If shortcut (.lnk), check if target exists
                     string target = path;
                     if (path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
                     {
@@ -2217,6 +2346,11 @@ namespace FloatingLauncher
                                 if (!string.IsNullOrEmpty(scTarget) && (File.Exists(scTarget) || Directory.Exists(scTarget)))
                                 {
                                     target = scTarget;
+                                }
+                                else
+                                {
+                                    // Target missing -> broken lnk -> render crisp badge instead of broken blank paper
+                                    return GetNamedBadgeIcon(appName ?? System.IO.Path.GetFileNameWithoutExtension(path));
                                 }
                             }
                         }
@@ -2404,6 +2538,27 @@ namespace FloatingLauncher
             {
                 var app = new Application();
                 app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                AppDomain.CurrentDomain.UnhandledException += (s, ev) =>
+                {
+                    try
+                    {
+                        string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopFloatingLauncher");
+                        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                        File.WriteAllText(System.IO.Path.Combine(dir, "crash.log"), ev.ExceptionObject.ToString());
+                    }
+                    catch { }
+                };
+                app.DispatcherUnhandledException += (s, ev) =>
+                {
+                    try
+                    {
+                        string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopFloatingLauncher");
+                        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                        File.WriteAllText(System.IO.Path.Combine(dir, "crash.log"), ev.Exception.ToString());
+                    }
+                    catch { }
+                    ev.Handled = true;
+                };
                 var mainWindow = new MainWindow();
                 app.MainWindow = mainWindow;
                 mainWindow.ShowLauncher();
