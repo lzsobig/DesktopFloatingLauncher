@@ -19,7 +19,7 @@ if not exist "%CSC_PATH%" (
 if not exist "bin" mkdir "bin"
 
 echo 正在编译源码 (src\Program.cs)...
-"%CSC_PATH%" /target:winexe /out:"bin\桌面极速悬浮窗.exe" /r:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll","C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationCore.dll","C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationFramework.dll","System.Xaml.dll","System.dll","System.Core.dll","System.Data.dll","System.Drawing.dll","System.Windows.Forms.dll","Microsoft.CSharp.dll" src\Program.cs
+"%CSC_PATH%" /target:winexe /out:"bin\桌面极速悬浮窗.exe" /win32icon:assets\app.ico /resource:assets\app.ico,app.ico /resource:assets\app.png,app.png /r:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll","C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationCore.dll","C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationFramework.dll","System.Xaml.dll","System.dll","System.Core.dll","System.Data.dll","System.Drawing.dll","System.Windows.Forms.dll","Microsoft.CSharp.dll" src\Program.cs
 
 if %errorlevel% neq 0 (
     echo.
