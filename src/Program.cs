@@ -96,6 +96,7 @@ namespace FloatingLauncher
         public double WindowTop { get; set; }
         public bool IsTopmost { get; set; }
         public string Hotkey { get; set; }
+        public bool ShowInTaskbar { get; set; }
         public bool ShowFloatingWidget { get; set; }
         public double WidgetLeft { get; set; }
         public double WidgetTop { get; set; }
@@ -107,6 +108,7 @@ namespace FloatingLauncher
             WindowTop = -1;
             IsTopmost = true;
             Hotkey = "Alt+Q"; // Default to Alt+Q to prevent conflict with Antigravity / Windows system keys
+            ShowInTaskbar = true; // Standalone independent app icon on Windows Taskbar
             ShowFloatingWidget = true; // Show compact desktop widget by default
             WidgetLeft = -1;
             WidgetTop = -1;
@@ -156,6 +158,11 @@ namespace FloatingLauncher
                         else if (key.Equals("Hotkey", StringComparison.OrdinalIgnoreCase))
                         {
                             config.Hotkey = val;
+                        }
+                        else if (key.Equals("ShowInTaskbar", StringComparison.OrdinalIgnoreCase))
+                        {
+                            bool b;
+                            if (bool.TryParse(val, out b)) config.ShowInTaskbar = b;
                         }
                         else if (key.Equals("ShowFloatingWidget", StringComparison.OrdinalIgnoreCase))
                         {
@@ -491,6 +498,14 @@ namespace FloatingLauncher
             var searchItem = new MenuItem { Header = "🔍 呼出搜索栏 (" + hkDisplay + ")" };
             searchItem.Click += (s, e) => mainWindow.ShowLauncher();
 
+            var tbItem = new MenuItem { Header = "📌 在任务栏显示独立图标", IsCheckable = true, IsChecked = config.ShowInTaskbar };
+            tbItem.Click += (s, e) =>
+            {
+                config.ShowInTaskbar = tbItem.IsChecked;
+                mainWindow.ShowInTaskbar = config.ShowInTaskbar;
+                ConfigManager.SaveConfig(config);
+            };
+
             var topItem = new MenuItem { Header = "📌 搜索栏保持最前", IsCheckable = true, IsChecked = config.IsTopmost };
             topItem.Click += (s, e) =>
             {
@@ -522,6 +537,7 @@ namespace FloatingLauncher
 
             ctxMenu.Items.Add(searchItem);
             ctxMenu.Items.Add(new Separator());
+            ctxMenu.Items.Add(tbItem);
             ctxMenu.Items.Add(topItem);
             ctxMenu.Items.Add(autostartItem);
             ctxMenu.Items.Add(hkItem);
@@ -544,6 +560,9 @@ namespace FloatingLauncher
 
     public class MainWindow : Window
     {
+        [DllImport("shell32.dll", SetLastError = true)]
+        private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);
+
         private FloatingWidgetWindow floatingWidget;
 
         public string HotkeyDisplay
@@ -661,8 +680,15 @@ namespace FloatingLauncher
                 source.AddHook(HwndHook);
             }
 
+            try
+            {
+                SetCurrentProcessExplicitAppUserModelID("DesktopFloatingLauncher.App.1.0");
+            }
+            catch { }
+
             ApplyHotkey(config.Hotkey ?? "Alt+Q");
             InitTrayIcon();
+            InitFloatingWidget();
         }
 
         public void ApplyHotkey(string keyStr)
@@ -799,6 +825,16 @@ namespace FloatingLauncher
                 showItem.Font = new System.Drawing.Font(menu.Font, System.Drawing.FontStyle.Bold);
                 showItem.Click += (s, e) => ShowLauncher();
 
+                var taskbarToggleItem = new ToolStripMenuItem("📌 在任务栏显示独立图标");
+                taskbarToggleItem.Checked = config.ShowInTaskbar;
+                taskbarToggleItem.Click += (s, e) =>
+                {
+                    config.ShowInTaskbar = !config.ShowInTaskbar;
+                    taskbarToggleItem.Checked = config.ShowInTaskbar;
+                    ShowInTaskbar = config.ShowInTaskbar;
+                    ConfigManager.SaveConfig(config);
+                };
+
                 var widgetToggleItem = new ToolStripMenuItem("🏝 显示桌面常驻挂件");
                 widgetToggleItem.Checked = config.ShowFloatingWidget;
                 widgetToggleItem.Click += (s, e) =>
@@ -855,6 +891,7 @@ namespace FloatingLauncher
                 };
 
                 menu.Items.Add(showItem);
+                menu.Items.Add(taskbarToggleItem);
                 menu.Items.Add(widgetToggleItem);
                 menu.Items.Add(new ToolStripSeparator());
                 menu.Items.Add(hkMenu);
@@ -951,7 +988,13 @@ namespace FloatingLauncher
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
-            ShowInTaskbar = false;
+            ShowInTaskbar = config.ShowInTaskbar;
+            try
+            {
+                var logo = AppIcons.GetAppLogoImage();
+                if (logo != null) Icon = logo;
+            }
+            catch { }
             Topmost = config.IsTopmost;
             WindowStartupLocation = WindowStartupLocation.Manual;
 
@@ -1019,6 +1062,17 @@ namespace FloatingLauncher
             // 1. Header Bar
             var headerGrid = new Grid { Margin = new Thickness(20, 16, 20, 10) };
             var headerLeft = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+            var appLogoImg = new System.Windows.Controls.Image
+            {
+                Source = AppIcons.GetAppLogoImage(),
+                Width = 24,
+                Height = 24,
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            RenderOptions.SetBitmapScalingMode(appLogoImg, BitmapScalingMode.HighQuality);
+            headerLeft.Children.Add(appLogoImg);
 
             var titleBlock = new TextBlock
             {
