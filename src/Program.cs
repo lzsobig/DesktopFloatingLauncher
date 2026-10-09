@@ -3283,6 +3283,14 @@ namespace FloatingLauncher
         [DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetThreadDesktop(IntPtr hDesktop);
+
+        private const uint DESKTOP_ALL_ACCESS = 0x1FF;
+
         private static System.Threading.Mutex appMutex;
 
         [STAThread]
@@ -3292,6 +3300,16 @@ namespace FloatingLauncher
             string logDir = System.IO.Path.Combine(appData, "DesktopFloatingLauncher");
             if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
             string logPath = System.IO.Path.Combine(logDir, "boot_trace.log");
+
+            try
+            {
+                IntPtr hDesktop = OpenDesktop("Default", 0, false, DESKTOP_ALL_ACCESS);
+                if (hDesktop != IntPtr.Zero)
+                {
+                    SetThreadDesktop(hDesktop);
+                }
+            }
+            catch { }
 
             try
             {
