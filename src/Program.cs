@@ -599,6 +599,15 @@ namespace FloatingLauncher
         [DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
 
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        public const int HWND_BROADCAST = 0xffff;
+        public static readonly uint WM_WAKE_LAUNCHER = RegisterWindowMessage("DesktopFloatingLauncher_WakeUp_Msg");
+
         [DllImport("user32.dll")]
         private static extern void LockWorkStation();
 
@@ -661,16 +670,32 @@ namespace FloatingLauncher
 
         public MainWindow()
         {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string logPath = System.IO.Path.Combine(appData, "DesktopFloatingLauncher", "boot_trace.log");
+
+            try { File.AppendAllText(logPath, "3.1 ConfigManager.LoadConfig()\r\n"); } catch {}
             config = ConfigManager.LoadConfig();
 
+            try { File.AppendAllText(logPath, "3.2 InitializeComponent()\r\n"); } catch {}
             InitializeComponent();
+
+            try { File.AppendAllText(logPath, "3.3 LoadIndexedApps()\r\n"); } catch {}
             LoadIndexedApps();
+
+            try { File.AppendAllText(logPath, "3.4 UpdateQuickDock()\r\n"); } catch {}
             UpdateQuickDock();
+
+            try { File.AppendAllText(logPath, "3.5 FilterResults(\"\")\r\n"); } catch {}
             FilterResults("");
+
+            try { File.AppendAllText(logPath, "3.6 MainWindow constructor finished!\r\n"); } catch {}
         }
 
         protected override void OnSourceInitialized(EventArgs e)
         {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string logPath = System.IO.Path.Combine(appData, "DesktopFloatingLauncher", "boot_trace.log");
+            try { File.AppendAllText(logPath, "OnSourceInitialized start\r\n"); } catch {}
             base.OnSourceInitialized(e);
             var helper = new WindowInteropHelper(this);
             windowHandle = helper.Handle;
@@ -687,9 +712,13 @@ namespace FloatingLauncher
             }
             catch { }
 
+            try { File.AppendAllText(logPath, "OnSourceInitialized ApplyHotkey\r\n"); } catch {}
             ApplyHotkey(config.Hotkey ?? "Alt+Q");
+            try { File.AppendAllText(logPath, "OnSourceInitialized InitTrayIcon\r\n"); } catch {}
             InitTrayIcon();
+            try { File.AppendAllText(logPath, "OnSourceInitialized InitFloatingWidget\r\n"); } catch {}
             InitFloatingWidget();
+            try { File.AppendAllText(logPath, "OnSourceInitialized end\r\n"); } catch {}
         }
 
         public void ApplyHotkey(string keyStr)
@@ -933,6 +962,11 @@ namespace FloatingLauncher
                 ToggleWindowVisibility();
                 handled = true;
             }
+            else if ((uint)msg == WM_WAKE_LAUNCHER)
+            {
+                ShowLauncher();
+                handled = true;
+            }
             return IntPtr.Zero;
         }
 
@@ -951,16 +985,24 @@ namespace FloatingLauncher
 
         public void ShowLauncher()
         {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string logPath = System.IO.Path.Combine(appData, "DesktopFloatingLauncher", "boot_trace.log");
+            try { File.AppendAllText(logPath, "4.1 ShowLauncher start\r\n"); } catch {}
+
             WindowState = WindowState.Normal;
             Visibility = Visibility.Visible;
+            try { File.AppendAllText(logPath, "4.2 calling Show()\r\n"); } catch {}
             Show();
+            try { File.AppendAllText(logPath, "4.3 calling Activate()\r\n"); } catch {}
             Activate();
             Topmost = true;
             Topmost = config.IsTopmost;
-            SetForegroundWindow(windowHandle);
-            searchBox.Focus();
-            searchBox.SelectAll();
+            try { File.AppendAllText(logPath, "4.4 calling SetForegroundWindow\r\n"); } catch {}
+            if (windowHandle != IntPtr.Zero) SetForegroundWindow(windowHandle);
+            try { File.AppendAllText(logPath, "4.5 searchBox.Focus\r\n"); } catch {}
+            if (searchBox != null) { searchBox.Focus(); searchBox.SelectAll(); }
 
+            try { File.AppendAllText(logPath, "4.6 pop-in animation\r\n"); } catch {}
             // 120ms pop-in animation
             if (windowScaleTransform != null && mainBorder != null)
             {
@@ -977,6 +1019,7 @@ namespace FloatingLauncher
                 };
                 mainBorder.BeginAnimation(UIElement.OpacityProperty, opacityAnim);
             }
+            try { File.AppendAllText(logPath, "4.7 ShowLauncher finished\r\n"); } catch {}
         }
 
         private void InitializeComponent()
@@ -1359,7 +1402,11 @@ namespace FloatingLauncher
 
             Loaded += (s, e) =>
             {
-                ShowLauncher();
+                if (searchBox != null)
+                {
+                    searchBox.Focus();
+                    searchBox.SelectAll();
+                }
             };
         }
 
@@ -1738,7 +1785,9 @@ namespace FloatingLauncher
 
         private void LoadIndexedApps()
         {
-            allIndexedApps.Clear();
+            try
+            {
+                allIndexedApps.Clear();
 
             // 1. Validate & Purge Dead Custom Apps
             var validCustom = new List<AppItem>();
@@ -1772,12 +1821,12 @@ namespace FloatingLauncher
             string desktopDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
             if (Directory.Exists(desktopDir))
             {
-                ScanDirectoryShortcuts(desktopDir, SearchOption.TopDirectoryOnly);
+                ScanDirectoryShortcuts(desktopDir, false);
                 try
                 {
                     foreach (string subDir in Directory.GetDirectories(desktopDir))
                     {
-                        ScanDirectoryShortcuts(subDir, SearchOption.TopDirectoryOnly);
+                        ScanDirectoryShortcuts(subDir, false);
 
                         // Index Desktop User Folders
                         string dirName = System.IO.Path.GetFileName(subDir);
@@ -1791,8 +1840,7 @@ namespace FloatingLauncher
                                 WorkingDirectory = subDir,
                                 DisplayPath = subDir,
                                 Category = "桌面文件夹",
-                                IsDirectory = true,
-                                IconSource = GetFolderIcon()
+                                IsDirectory = true
                             });
                         }
                     }
@@ -1804,35 +1852,35 @@ namespace FloatingLauncher
             string publicDesktop = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
             if (Directory.Exists(publicDesktop))
             {
-                ScanDirectoryShortcuts(publicDesktop, SearchOption.TopDirectoryOnly);
+                ScanDirectoryShortcuts(publicDesktop, false);
             }
 
             // 5. User Start Menu Programs (All subdirectories)
             string userPrograms = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
             if (Directory.Exists(userPrograms))
             {
-                ScanDirectoryShortcuts(userPrograms, SearchOption.AllDirectories);
+                ScanDirectoryShortcuts(userPrograms, true);
             }
 
             // 6. Common / All Users Start Menu Programs (All subdirectories)
             string commonPrograms = Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms);
             if (Directory.Exists(commonPrograms))
             {
-                ScanDirectoryShortcuts(commonPrograms, SearchOption.AllDirectories);
+                ScanDirectoryShortcuts(commonPrograms, true);
             }
 
             // 7. Taskbar Pinned & Quick Launch
             string quickLaunch = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Internet Explorer\Quick Launch");
             if (Directory.Exists(quickLaunch))
             {
-                ScanDirectoryShortcuts(quickLaunch, SearchOption.TopDirectoryOnly);
+                ScanDirectoryShortcuts(quickLaunch, false);
             }
 
             // 8. Pinned Taskbar Apps
             string pinnedTaskbar = System.IO.Path.Combine(quickLaunch, @"User Pinned\TaskBar");
             if (Directory.Exists(pinnedTaskbar))
             {
-                ScanDirectoryShortcuts(pinnedTaskbar, SearchOption.TopDirectoryOnly);
+                ScanDirectoryShortcuts(pinnedTaskbar, false);
             }
 
             // 9. Standard Windows Tools
@@ -1860,20 +1908,24 @@ namespace FloatingLauncher
             }
 
             countBadge.Text = "已收录 " + allIndexedApps.Count + " 项资源";
-
-            // Asynchronously pre-warm icons in threadpool so keystrokes have zero disk I/O
-            var appsToPrewarm = new List<AppItem>(allIndexedApps);
-            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            try
             {
-                foreach (var app in appsToPrewarm)
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string logPath = System.IO.Path.Combine(appData, "DesktopFloatingLauncher", "boot_trace.log");
+                File.AppendAllText(logPath, "3.3.1 LoadIndexedApps completed successfully! Total: " + allIndexedApps.Count + "\r\n");
+            }
+            catch { }
+            }
+            catch (Exception ex)
+            {
+                try
                 {
-                    try
-                    {
-                        var dummy = app.IconSource;
-                    }
-                    catch { }
+                    string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                    string logPath = System.IO.Path.Combine(appData, "DesktopFloatingLauncher", "boot_trace.log");
+                    File.AppendAllText(logPath, "ERROR in LoadIndexedApps: " + ex + "\r\n");
                 }
-            });
+                catch { }
+            }
         }
 
         private void AddSystemTool(string name, string exeName, string pinyin, string category)
@@ -1888,8 +1940,7 @@ namespace FloatingLauncher
                 PinyinInitials = pinyin,
                 TargetPath = fullPath,
                 DisplayPath = exeName,
-                Category = category,
-                IconSource = GetFileIcon(fullPath, name)
+                Category = category
             });
         }
 
@@ -1949,8 +2000,7 @@ namespace FloatingLauncher
                                             TargetPath = f,
                                             WorkingDirectory = dir,
                                             DisplayPath = f,
-                                            Category = "应用",
-                                            IconSource = GetFileIcon(f, friendlyName)
+                                            Category = "应用"
                                         });
                                     }
                                 }
@@ -1963,20 +2013,33 @@ namespace FloatingLauncher
             }
         }
 
-        private void ScanDirectoryShortcuts(string directory, SearchOption option)
+        private void ScanDirectoryShortcuts(string directory, bool recursive)
         {
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
             try
             {
-                var lnks = Directory.GetFiles(directory, "*.lnk", option);
+                var lnks = Directory.GetFiles(directory, "*.lnk", SearchOption.TopDirectoryOnly);
                 foreach (var lnk in lnks)
                 {
                     AddShortcutSafe(lnk);
                 }
 
-                var urls = Directory.GetFiles(directory, "*.url", option);
+                var urls = Directory.GetFiles(directory, "*.url", SearchOption.TopDirectoryOnly);
                 foreach (var url in urls)
                 {
                     AddUrlShortcutSafe(url);
+                }
+
+                if (recursive)
+                {
+                    foreach (var sub in Directory.GetDirectories(directory))
+                    {
+                        try
+                        {
+                            ScanDirectoryShortcuts(sub, true);
+                        }
+                        catch { }
+                    }
                 }
             }
             catch { }
@@ -2108,8 +2171,7 @@ namespace FloatingLauncher
                         WorkingDirectory = workDir,
                         OriginalLnkPath = lnkPath,
                         DisplayPath = !string.IsNullOrEmpty(target) ? target : lnkPath,
-                        Category = "快捷方式",
-                        IconSource = GetFileIcon(!string.IsNullOrEmpty(target) && File.Exists(target) ? target : lnkPath, name)
+                        Category = "快捷方式"
                     };
                 }
             }
@@ -2122,8 +2184,7 @@ namespace FloatingLauncher
                 TargetPath = lnkPath,
                 OriginalLnkPath = lnkPath,
                 DisplayPath = lnkPath,
-                Category = "快捷方式",
-                IconSource = GetFileIcon(lnkPath, System.IO.Path.GetFileNameWithoutExtension(lnkPath))
+                Category = "快捷方式"
             };
         }
 
@@ -3227,23 +3288,52 @@ namespace FloatingLauncher
         [STAThread]
         public static void Main()
         {
-            bool isNew;
-            appMutex = new System.Threading.Mutex(true, "DesktopFloatingLauncherSingleInstanceMutex", out isNew);
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string logDir = System.IO.Path.Combine(appData, "DesktopFloatingLauncher");
+            if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
+            string logPath = System.IO.Path.Combine(logDir, "boot_trace.log");
+
+            try
+            {
+                File.AppendAllText(logPath, "1. Main entry: " + DateTime.Now + " PID: " + Process.GetCurrentProcess().Id + "\r\n");
+            }
+            catch { }
+
+            bool isNew = true;
+            try
+            {
+                appMutex = new System.Threading.Mutex(true, "DesktopFloatingLauncherMutex_" + Environment.UserName, out isNew);
+                File.AppendAllText(logPath, "2. Mutex isNew=" + isNew + "\r\n");
+            }
+            catch (Exception ex)
+            {
+                File.AppendAllText(logPath, "2. Mutex exception: " + ex.Message + "\r\n");
+                isNew = true;
+            }
 
             if (!isNew)
             {
+                var current = Process.GetCurrentProcess();
+                var existing = Process.GetProcessesByName(current.ProcessName)
+                    .FirstOrDefault(p => p.Id != current.Id);
+                File.AppendAllText(logPath, "2.1 Existing process=" + (existing != null ? existing.Id.ToString() : "null") + "\r\n");
                 try
                 {
-                    var current = Process.GetCurrentProcess();
-                    var existing = Process.GetProcessesByName(current.ProcessName)
-                        .FirstOrDefault(p => p.Id != current.Id);
-                    if (existing != null && existing.MainWindowHandle != IntPtr.Zero)
-                    {
-                        ShowWindow(existing.MainWindowHandle, 9);
-                        SetForegroundWindow(existing.MainWindowHandle);
-                    }
+                    MainWindow.PostMessage((IntPtr)MainWindow.HWND_BROADCAST, MainWindow.WM_WAKE_LAUNCHER, IntPtr.Zero, IntPtr.Zero);
                 }
                 catch { }
+                if (existing != null)
+                {
+                    try
+                    {
+                        if (existing.MainWindowHandle != IntPtr.Zero)
+                        {
+                            ShowWindow(existing.MainWindowHandle, 9);
+                            SetForegroundWindow(existing.MainWindowHandle);
+                        }
+                    }
+                    catch { }
+                }
                 return;
             }
 
@@ -3251,10 +3341,19 @@ namespace FloatingLauncher
             {
                 var app = new Application();
                 app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                app.Exit += (s, ev) =>
+                {
+                    try { File.AppendAllText(logPath, "EVENT: app.Exit called with code " + ev.ApplicationExitCode + "\r\n"); } catch { }
+                };
+                AppDomain.CurrentDomain.ProcessExit += (s, ev) =>
+                {
+                    try { File.AppendAllText(logPath, "EVENT: ProcessExit triggered\r\n"); } catch { }
+                };
                 AppDomain.CurrentDomain.UnhandledException += (s, ev) =>
                 {
                     try
                     {
+                        File.AppendAllText(logPath, "EVENT: UnhandledException: " + ev.ExceptionObject + "\r\n");
                         string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopFloatingLauncher");
                         if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                         File.WriteAllText(System.IO.Path.Combine(dir, "crash.log"), ev.ExceptionObject.ToString());
@@ -3265,6 +3364,7 @@ namespace FloatingLauncher
                 {
                     try
                     {
+                        File.AppendAllText(logPath, "EVENT: DispatcherUnhandledException: " + ev.Exception + "\r\n");
                         string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopFloatingLauncher");
                         if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                         File.WriteAllText(System.IO.Path.Combine(dir, "crash.log"), ev.Exception.ToString());
@@ -3272,13 +3372,30 @@ namespace FloatingLauncher
                     catch { }
                     ev.Handled = true;
                 };
+                File.AppendAllText(logPath, "3. Creating MainWindow\r\n");
                 var mainWindow = new MainWindow();
+                mainWindow.Closing += (s, ev) =>
+                {
+                    try { File.AppendAllText(logPath, "EVENT: mainWindow.Closing cancel=" + ev.Cancel + "\r\n"); } catch { }
+                };
+                mainWindow.Closed += (s, ev) =>
+                {
+                    try { File.AppendAllText(logPath, "EVENT: mainWindow.Closed\r\n"); } catch { }
+                };
                 app.MainWindow = mainWindow;
+                File.AppendAllText(logPath, "4. ShowLauncher\r\n");
                 mainWindow.ShowLauncher();
-                app.Run();
+                File.AppendAllText(logPath, "5. app.Run()\r\n");
+                int exitCode = app.Run();
+                File.AppendAllText(logPath, "6. app.Run exited with code: " + exitCode + "\r\n");
             }
             catch (Exception ex)
             {
+                try
+                {
+                    File.AppendAllText(logPath, "ERROR in Main: " + ex + "\r\n");
+                }
+                catch { }
                 try
                 {
                     string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopFloatingLauncher");
