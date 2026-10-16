@@ -9,6 +9,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -533,7 +534,11 @@ namespace FloatingLauncher
             };
 
             var exitItem = new MenuItem { Header = "🚪 退出程序" };
-            exitItem.Click += (s, e) => Application.Current.Shutdown();
+            exitItem.Click += (s, e) =>
+            {
+                MainWindow.IsExiting = true;
+                Application.Current.Shutdown();
+            };
 
             ctxMenu.Items.Add(searchItem);
             ctxMenu.Items.Add(new Separator());
@@ -548,6 +553,17 @@ namespace FloatingLauncher
             ContextMenu = ctxMenu;
         }
 
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            if (!MainWindow.IsExiting)
+            {
+                e.Cancel = true;
+                Hide();
+                return;
+            }
+            base.OnClosing(e);
+        }
+
         public void UpdateHotkeyHint(string text)
         {
             if (hintText != null)
@@ -560,8 +576,37 @@ namespace FloatingLauncher
 
     public class MainWindow : Window
     {
+        public static bool IsExiting = false;
+
         [DllImport("shell32.dll", SetLastError = true)]
         private static extern void SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);
+
+        [DllImport("user32.dll")]
+        private static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
+
+        private EventWaitHandle wakeEvent;
+        private RegisteredWaitHandle registeredWaitHandle;
+
+        private void InitWakeEvent()
+        {
+            try
+            {
+                bool createdNew;
+                wakeEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "DesktopFloatingLauncher_WakeEvent_" + Environment.UserName, out createdNew);
+                registeredWaitHandle = ThreadPool.RegisterWaitForSingleObject(wakeEvent, (state, timedOut) =>
+                {
+                    try
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            ShowLauncher();
+                        }));
+                    }
+                    catch { }
+                }, null, -1, false);
+            }
+            catch { }
+        }
 
         private FloatingWidgetWindow floatingWidget;
 
@@ -718,6 +763,8 @@ namespace FloatingLauncher
             InitTrayIcon();
             try { File.AppendAllText(logPath, "OnSourceInitialized InitFloatingWidget\r\n"); } catch {}
             InitFloatingWidget();
+            try { File.AppendAllText(logPath, "OnSourceInitialized InitWakeEvent\r\n"); } catch {}
+            InitWakeEvent();
             try { File.AppendAllText(logPath, "OnSourceInitialized end\r\n"); } catch {}
         }
 
@@ -787,8 +834,33 @@ namespace FloatingLauncher
             catch { }
         }
 
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            if (!IsExiting)
+            {
+                e.Cancel = true;
+                Hide();
+                TrimMemory();
+                return;
+            }
+            base.OnClosing(e);
+        }
+
         protected override void OnClosed(EventArgs e)
         {
+            try
+            {
+                if (registeredWaitHandle != null)
+                {
+                    registeredWaitHandle.Unregister(null);
+                }
+                if (wakeEvent != null)
+                {
+                    wakeEvent.Dispose();
+                }
+            }
+            catch { }
+
             if (floatingWidget != null)
             {
                 try { floatingWidget.Close(); } catch { }
@@ -912,6 +984,7 @@ namespace FloatingLauncher
                 var exitItem = new ToolStripMenuItem("✕ 退出程序");
                 exitItem.Click += (s, e) =>
                 {
+                    IsExiting = true;
                     if (trayIcon != null)
                     {
                         trayIcon.Visible = false;
@@ -998,7 +1071,11 @@ namespace FloatingLauncher
             Topmost = true;
             Topmost = config.IsTopmost;
             try { File.AppendAllText(logPath, "4.4 calling SetForegroundWindow\r\n"); } catch {}
-            if (windowHandle != IntPtr.Zero) SetForegroundWindow(windowHandle);
+            if (windowHandle != IntPtr.Zero)
+            {
+                SetForegroundWindow(windowHandle);
+                SwitchToThisWindow(windowHandle, true);
+            }
             try { File.AppendAllText(logPath, "4.5 searchBox.Focus\r\n"); } catch {}
             if (searchBox != null) { searchBox.Focus(); searchBox.SelectAll(); }
 
@@ -3320,8 +3397,13 @@ namespace FloatingLauncher
             bool isNew = true;
             try
             {
-                appMutex = new System.Threading.Mutex(true, "DesktopFloatingLauncherMutex_" + Environment.UserName, out isNew);
+                appMutex = new Mutex(true, "DesktopFloatingLauncherMutex_" + Environment.UserName, out isNew);
                 File.AppendAllText(logPath, "2. Mutex isNew=" + isNew + "\r\n");
+            }
+            catch (AbandonedMutexException ex)
+            {
+                File.AppendAllText(logPath, "2. Mutex abandoned, acquired ownership: " + ex.Message + "\r\n");
+                isNew = true;
             }
             catch (Exception ex)
             {
@@ -3335,24 +3417,73 @@ namespace FloatingLauncher
                 var existing = Process.GetProcessesByName(current.ProcessName)
                     .FirstOrDefault(p => p.Id != current.Id);
                 File.AppendAllText(logPath, "2.1 Existing process=" + (existing != null ? existing.Id.ToString() : "null") + "\r\n");
-                try
-                {
-                    MainWindow.PostMessage((IntPtr)MainWindow.HWND_BROADCAST, MainWindow.WM_WAKE_LAUNCHER, IntPtr.Zero, IntPtr.Zero);
-                }
-                catch { }
+
+                bool existingHealthy = false;
                 if (existing != null)
                 {
                     try
                     {
-                        if (existing.MainWindowHandle != IntPtr.Zero)
+                        if (!existing.HasExited && existing.Responding)
                         {
-                            ShowWindow(existing.MainWindowHandle, 9);
-                            SetForegroundWindow(existing.MainWindowHandle);
+                            existingHealthy = true;
                         }
                     }
                     catch { }
                 }
-                return;
+
+                if (existingHealthy)
+                {
+                    // 1. Signal named wake event (zero-lag & reliable across window states)
+                    try
+                    {
+                        using (var we = EventWaitHandle.OpenExisting("DesktopFloatingLauncher_WakeEvent_" + Environment.UserName))
+                        {
+                            we.Set();
+                            File.AppendAllText(logPath, "2.2 Signaled WakeEvent successfully\r\n");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        File.AppendAllText(logPath, "2.2 WakeEvent error: " + ex.Message + "\r\n");
+                    }
+
+                    // 2. Post broadcast message as fallback
+                    try
+                    {
+                        MainWindow.PostMessage((IntPtr)MainWindow.HWND_BROADCAST, MainWindow.WM_WAKE_LAUNCHER, IntPtr.Zero, IntPtr.Zero);
+                    }
+                    catch { }
+
+                    // 3. Bring existing main window handle to front if valid
+                    if (existing != null)
+                    {
+                        try
+                        {
+                            if (existing.MainWindowHandle != IntPtr.Zero)
+                            {
+                                ShowWindow(existing.MainWindowHandle, 9);
+                                SetForegroundWindow(existing.MainWindowHandle);
+                            }
+                        }
+                        catch { }
+                    }
+                    return;
+                }
+                else
+                {
+                    // Existing process was unresponsive or dead zombie
+                    File.AppendAllText(logPath, "2.2 Existing process dead or zombie, terminating...\r\n");
+                    if (existing != null)
+                    {
+                        try { existing.Kill(); } catch { }
+                    }
+                    System.Threading.Thread.Sleep(300);
+                    try
+                    {
+                        appMutex = new Mutex(true, "DesktopFloatingLauncherMutex_" + Environment.UserName, out isNew);
+                    }
+                    catch { }
+                }
             }
 
             try
